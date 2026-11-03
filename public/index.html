@@ -2637,6 +2637,8 @@ function renderPoEditor(page){
         <button class="btn" id="po-back">← All POs</button>
         <button class="btn" id="po-print">Supplier PO</button>
         <button class="btn" id="po-customs">PO for customs</button>
+        <button class="btn" id="po-pi">Proforma invoice</button>
+        <button class="btn" id="po-ci">Commercial invoice</button>
         <button class="btn" id="po-xlsx">Costing sheet (Excel)</button>
         ${poOpen.id ? '<button class="btn btn-danger" id="po-del">Delete</button>' : ''}
         <button class="btn btn-primary" id="po-save">Save</button>
@@ -2664,9 +2666,11 @@ function renderPoEditor(page){
         ${field('beNumber','Bill of Entry no.')}
         ${field('beDate','Bill of Entry date','date')}
         ${field('beInterest','Interest on Bill of Entry (₹)','number')}
-        <div class="field span4 hint" style="margin-top:-6px;">The BE no. is needed for "Generate BE" in the POs list. Interest is added to Other charges. The fields below are printed on the PO for customs.</div>
+        <div class="field span4 hint" style="margin-top:-6px;">The BE no. is needed for "Generate BE" in the POs list. Interest is added to Other charges. The fields below are printed on the PO for customs and the invoices.</div>
         ${field('piNumber','Proforma invoice / S/C no.')}
         ${field('piDate','Invoice date','date')}
+        ${field('ciNumber','Commercial invoice no. (blank = proforma no.)')}
+        ${field('ciDate','Commercial invoice date','date')}
         ${field('priceBasis','Price basis','text','span2')}
         ${field('shipment','Shipment','text','span2')}
         ${field('packing','Packing','text','span2')}
@@ -2832,6 +2836,11 @@ function renderPoEditor(page){
     {label:'Excel', run:()=>exportCustomsPo(d)},
     {label:'Print / PDF', primary:true, run:()=>printCustomsPo(d)},
   ]));
+  [['po-pi','pi','Proforma invoice'], ['po-ci','ci','Commercial invoice']].forEach(([id, kind, title])=>
+    document.getElementById(id).addEventListener('click', ()=>showChoices(title, 'On the supplier\'s letterhead, addressed to us. Download it as an Excel file, or open it to print or save as PDF.', [
+      {label:'Excel', run:()=>exportInvoice(d, kind)},
+      {label:'Print / PDF', primary:true, run:()=>printInvoice(d, kind)},
+    ])));
   document.getElementById('po-xlsx').addEventListener('click', ()=>exportPoCosting(d));
   document.getElementById('po-save').addEventListener('click', ()=>savePo(page));
   const del = document.getElementById('po-del');
@@ -3388,6 +3397,128 @@ function printCustomsPo(d){
   <script>window.onload = () => window.print();<\/script>
   </body></html>`;
   openPrintWindow(html);
+}
+
+/* Proforma and commercial invoices: the supplier's document, on the supplier's letterhead, addressed to us as the buyer.
+   Shared by the printout and the Excel file. kind = 'pi' | 'ci'. */
+function invoiceParts(d, kind){
+  const {b, v, c, t, cur, buyerName, terms, poDate} = customsPoParts(d);
+  const dmy = x => { const m = String(x||'').match(/^(\d{4})-(\d{2})-(\d{2})$/); return m ? `${m[3]}-${m[2]}-${m[1]}` : String(x||''); };
+  const pi = kind==='pi';
+  const no = pi ? d.piNumber : (d.ciNumber || d.piNumber), date = pi ? d.piDate : (d.ciDate || d.piDate);
+  const rows = d.lines.map((l,i)=>{
+    const x = c.rows[i], q = toNum(l.qty);
+    return {item:l.item||'', spec:specWithSheet(l), hs:l.hs||'', qty:q, unit:lineUnit(l), price:round3(q ? x.cifUsd/q : 0), amount:round2(x.cifUsd)};
+  });
+  return {title: pi ? 'PROFORMA INVOICE' : 'COMMERCIAL INVOICE', file: pi ? 'proforma-invoice' : 'commercial-invoice',
+    v, t, cur, rows, buyerName, terms, no:no||'',
+    supplierLines: [(v.address||'').trim(), [v.phone && 'Tel: ' + v.phone, v.email].filter(Boolean).join('  |  '), v.country].filter(Boolean),
+    buyerLines: [(b.address||'').trim(), [b.iec && 'IEC: '+b.iec, b.gstin && 'GSTIN: '+b.gstin, b.pan && 'PAN: '+b.pan].filter(Boolean).join('  |  '),
+      [b.phone && 'Tel: ' + b.phone, b.email].filter(Boolean).join('  |  ')].filter(Boolean),
+    meta: [
+      [pi ? 'Proforma Invoice No.' : 'Invoice No.', no||'', 'Date', dmy(date)],
+      ["Buyer's P.O. No.", d.poNumber||'', 'P.O. Date', poDate],
+      ['Price Basis', d.priceBasis || d.deliveryTerms || 'CIF', 'Currency', cur],
+      ['Port of Loading', d.port||'', 'Country of Origin', v.country||''],
+    ],
+  };
+}
+function printInvoice(d, kind){
+  const p = invoiceParts(d, kind), {v, t, cur} = p;
+  const e = escapeHtml, br = x => e(x).replace(/\n/g,'<br>');
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${e(p.no || d.poNumber)} ${e(p.title.toLowerCase())}</title><style>
+    @page{size:A4 portrait;margin:12mm 12mm 14mm;@bottom-center{content:"${e(p.title)}  |  Page " counter(page) " of " counter(pages);font:9px Arial,sans-serif;color:#555;}}
+    *{-webkit-print-color-adjust:exact;print-color-adjust:exact;box-sizing:border-box;}
+    body{font-family:Arial,Helvetica,sans-serif;font-size:11.5px;color:#111;margin:0;}
+    .sheet{border:1.5px solid #1F3864;}
+    .head{text-align:center;padding:9px 8px 8px;border-bottom:1.5px solid #1F3864;}
+    .head .name{font-size:18px;font-weight:700;color:#1F3864;letter-spacing:.03em;} .head div{margin-top:3px;}
+    .band{background:#1F3864;color:#fff;text-align:center;font-size:18px;font-weight:700;letter-spacing:.06em;padding:6px;}
+    table{width:100%;border-collapse:collapse;}
+    .meta th,.meta td{border:1px solid #9aa7b8;padding:4px 6px;text-align:left;}
+    .meta th{background:#dfe6ef;width:22%;font-weight:700;} .meta td{width:28%;}
+    .sec{background:#1F3864;color:#fff;font-weight:700;font-size:11px;padding:3px 6px;}
+    .buyer{padding:5px 8px 7px;line-height:1.45;border-bottom:1px solid #9aa7b8;}
+    .items{margin-top:8px;} .items th{background:#1F3864;color:#fff;padding:5px 6px;font-size:11px;border:1px solid #1F3864;}
+    .items td{border:1px solid #9aa7b8;padding:3px 6px;vertical-align:middle;} .items .sub{color:#444;font-size:10.5px;}
+    .items .c{text-align:center;} .items .r{text-align:right;white-space:nowrap;}
+    .items .tot td{font-weight:700;background:#dfe6ef;border-top:1.5px solid #1F3864;padding:4px 6px;}
+    .words{font-style:italic;padding:6px 8px;border-bottom:1px solid #9aa7b8;}
+    .terms td{border:1px solid #9aa7b8;padding:4px 6px;vertical-align:top;} .terms td:first-child{background:#dfe6ef;font-weight:700;width:30%;}
+    .sign{display:flex;justify-content:flex-end;padding:14px 8px 8px;} .sign>div{width:45%;text-align:right;}
+    .sign .who{font-weight:700;} .sign .box{height:90px;} .sign .line{border-top:1px solid #111;padding-top:3px;}
+    tr{page-break-inside:avoid;}
+  </style></head><body><div class="sheet">
+    <div class="head"><div class="name">${e(String(v.name||'').toUpperCase())}</div>${p.supplierLines.map(x=>`<div>${br(x)}</div>`).join('')}</div>
+    <div class="band">${e(p.title)}</div>
+    <table class="meta">${p.meta.map(([l1,v1,l2,v2])=>`<tr><th>${e(l1)}</th><td>${e(v1)}</td><th>${e(l2)}</th><td>${e(v2)}</td></tr>`).join('')}</table>
+    <div class="sec">BUYER / CONSIGNEE</div>
+    <div class="buyer"><b>${e(p.buyerName.toUpperCase())}</b>${p.buyerLines.map(x=>`<br>${br(x)}`).join('')}</div>
+    <table class="items">
+      <thead><tr><th style="width:4%">#</th><th>Item / Description</th><th style="width:10%">HS Code</th><th style="width:10%">Qty</th><th style="width:6%">Unit</th><th style="width:13%">CIF Price (${e(cur)})</th><th style="width:15%">Total Amount CIF (${e(cur)})</th></tr></thead>
+      <tbody>${p.rows.map((x,i)=>`<tr><td class="c">${i+1}</td><td><b>${e(x.item)}</b>${x.spec?`<div class="sub">${e(x.spec)}</div>`:''}</td><td class="c">${e(x.hs)}</td>
+        <td class="r">${fmtQty(x.qty)}</td><td class="c">${e(x.unit)}</td><td class="r">${fmtPrice(x.price)}</td><td class="r">${fmtFx(x.amount)}</td></tr>`).join('')}
+        <tr class="tot"><td colspan="3" class="r">TOTAL CIF</td><td class="r">${fmtQty(t.qty)}</td><td></td><td></td><td class="r">${cur==='USD'?'$':e(cur)+' '}${fmtFx(t.cifUsd)}</td></tr>
+      </tbody>
+    </table>
+    <div class="words">Amount in words: ${e(amountInWords(t.cifUsd, cur))}</div>
+    ${p.terms.length ? `<div class="sec">TERMS &amp; BANK DETAILS</div><table class="terms">${p.terms.map(([k,val])=>`<tr><td>${e(k)}</td><td>${br(val)}</td></tr>`).join('')}</table>` : ''}
+    <div class="sign"><div><div class="who">For ${e(String(v.name||'').toUpperCase())}</div><div class="box"></div><div class="line">Authorised Signatory</div></div></div>
+  </div>
+  <script>window.onload = () => window.print();<\/script>
+  </body></html>`;
+  openPrintWindow(html);
+}
+async function exportInvoice(d, kind){
+  let ExcelJS;
+  try{ ExcelJS = await loadExcelJs(); }catch(ex){ showToast(ex.message); return; }
+  const p = invoiceParts(d, kind), {v, t, cur} = p;
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet(kind==='pi' ? 'Proforma invoice' : 'Commercial invoice', {views:[{showGridLines:false}],
+    pageSetup:{orientation:'portrait', paperSize:9, fitToPage:true, fitToWidth:1, fitToHeight:0, margins:{left:0.45, right:0.45, top:0.5, bottom:0.6, header:0.2, footer:0.25}},
+    headerFooter:{oddFooter:`&C${p.title}  |  Page &P of &N`}});
+  ws.columns = [5, 40, 11, 12, 7, 14, 17].map(width=>({width}));
+  const N = 7, k = xlKit(ws), navy = 'FF1F3864', onNavy = {bold:true, color:{argb:XL.white}};
+  let r = 1;
+  k.put(r, 1, N, String(v.name||'').toUpperCase(), {font:{bold:true, size:14, color:{argb:navy}}, align:{horizontal:'center'}}); ws.getRow(r++).height = 22;
+  p.supplierLines.forEach(text=>{ k.put(r, 1, N, text.replace(/\n/g, ', '), {align:{horizontal:'center'}}); k.fit(r++, [[text, 95]]); });
+  k.put(r, 1, N, p.title, {fill:navy, font:{...onNavy, size:15}, align:{horizontal:'center'}}); ws.getRow(r++).height = 24;
+  p.meta.forEach(([l1, v1, l2, v2])=>{ k.label(r, 1, 2, l1); k.put(r, 3, 4, v1); k.label(r, 5, 6, l2); k.put(r, 7, 7, v2, {align:{horizontal:'right'}}); r++; });
+  k.put(r++, 1, N, 'BUYER / CONSIGNEE', {fill:navy, font:onNavy});
+  [p.buyerName.toUpperCase(), ...p.buyerLines].forEach((text, i)=>{ k.put(r, 1, N, text.replace(/\n/g, ', '), i===0 ? {font:{bold:true}} : {}); k.fit(r++, [[text, 95]]); });
+  r++;
+  ['#','Item / Description','HS Code','Qty','Unit',`CIF Price (${cur})`,`Total Amount CIF (${cur})`]
+    .forEach((h,i)=>k.put(r, i+1, i+1, h, {fill:navy, font:onNavy, align:{horizontal:'center'}}));
+  ws.getRow(r++).height = 30;
+  p.rows.forEach((x, i)=>{
+    k.put(r, 1, 1, i+1, {align:{horizontal:'center'}});
+    k.put(r, 2, 2, {richText:[{text:x.item, font:{bold:true}}, ...(x.spec ? [{text:'\n' + x.spec}] : [])]});
+    k.put(r, 3, 3, x.hs, {align:{horizontal:'center'}});
+    k.put(r, 4, 4, x.qty, {fmt:XL_FMT.dec});
+    k.put(r, 5, 5, x.unit, {align:{horizontal:'center'}});
+    k.put(r, 6, 6, x.price, {fmt:XL_FMT.price});
+    k.put(r, 7, 7, x.amount, {fmt:XL_FMT.usd});
+    ws.getRow(r++).height = Math.max(18, [x.item, x.spec].filter(Boolean).reduce((n, s)=>n + Math.ceil(s.length / 42), 0) * 15);
+  });
+  const tot = {fill:XL.band, font:{bold:true}};
+  k.put(r, 1, 3, 'TOTAL CIF', {...tot, align:{horizontal:'right'}});
+  k.put(r, 4, 4, t.qty, {...tot, fmt:XL_FMT.dec}); k.put(r, 5, 6, '', tot);
+  k.put(r, 7, 7, round2(t.cifUsd), {...tot, fmt:cur==='USD' ? '"$"#,##0.00' : XL_FMT.usd}); r++;
+  const words = 'Amount in words: ' + amountInWords(t.cifUsd, cur);
+  k.put(r, 1, N, words, {font:{italic:true}}); k.fit(r++, [[words, 95]]);
+  if(p.terms.length){
+    r++;
+    k.put(r++, 1, N, 'TERMS & BANK DETAILS', {fill:navy, font:onNavy});
+    p.terms.forEach(([key, val])=>{ k.label(r, 1, 2, key); k.put(r, 3, N, String(val).replace(/\n/g, ', ')); k.fit(r++, [[val, 70]]); });
+  }
+  r += 2;
+  ws.mergeCells(r, 5, r, 7);
+  Object.assign(ws.getCell(r, 5), {value:'For ' + String(v.name||'').toUpperCase(), font:{bold:true}, alignment:{horizontal:'right'}});
+  r += 5;
+  ws.mergeCells(r, 5, r, 7);
+  Object.assign(ws.getCell(r, 5), {value:'Authorised Signatory', alignment:{horizontal:'right'}, border:{top:{style:'thin', color:{argb:XL.ink}}}});
+  await saveWorkbook(wb, (p.no || d.poNumber || 'PO').replace(/[^\w.-]+/g,'-') + '-' + p.file + '.xlsx');
+  showToast(p.title.charAt(0) + p.title.slice(1).toLowerCase() + ' ready');
 }
 
 /* Internal costing workbook: every column of the costing sheet, with an order summary. */
