@@ -2575,6 +2575,8 @@ function openPo(id){
   if(!src) return;
   const draft = JSON.parse(JSON.stringify(src));
   delete draft.id;
+  // a PO saved without terms takes the ones in Masters → PO settings
+  if(!String(draft.terms||'').trim()) draft.terms = poSettings().terms;
   poOpen = {id, draft, dirty:!id};
   render();
   window.scrollTo(0,0);
@@ -2777,7 +2779,7 @@ function renderPoEditor(page){
       <div class="panel">
         <h3>Terms &amp; conditions</h3>
         <textarea data-fk="h-terms" data-h="terms" rows="9">${escapeHtml(d.terms||'')}</textarea>
-        <div class="hint">Printed on the supplier PO.</div>
+        <div class="hint">Printed on the supplier PO and the PO for customs. New POs start with the terms in Masters → PO settings.</div>
       </div>
     </div>`;
 
@@ -3097,6 +3099,7 @@ function customsPoParts(d){
       ['Beneficiary', [v.name, v.accountNo && 'A/c No. ' + v.accountNo].filter(Boolean).join('  |  ')],
       ['Bank', v.bank], ['SWIFT / BIC', v.swift],
     ].filter(([,val])=>val),
+    conditions: String(d.terms || s.terms || '').trim(),
     poDate: (m => m ? `${m[3]}-${m[2]}-${m[1]}` : String(d.date||''))(String(d.date||'').match(/^(\d{4})-(\d{2})-(\d{2})$/)),
     piDate: (dt => !d.piDate ? '' : isNaN(dt) ? String(d.piDate) : `${String(dt.getDate()).padStart(2,'0')}-${dt.toLocaleString('en-GB',{month:'short'})}-${dt.getFullYear()}`)(new Date(String(d.piDate||'')+'T00:00:00')),
   };
@@ -3262,7 +3265,8 @@ async function exportEwayBill(po){
 async function exportCustomsPo(d){
   let ExcelJS;
   try{ ExcelJS = await loadExcelJs(); }catch(ex){ showToast(ex.message); return; }
-  const {s, b, v, c, t, cur, groups, buyerName, terms, poDate, piDate, contact} = customsPoParts(d);
+  const {s, b, v, c, t, cur, groups, buyerName, terms:baseTerms, conditions, poDate, piDate, contact} = customsPoParts(d);
+  const terms = conditions ? [...baseTerms, ['Conditions', conditions]] : baseTerms;
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('PO for customs', {views:[{showGridLines:false}],
     pageSetup:{orientation:'portrait', paperSize:9, fitToPage:true, fitToWidth:1, fitToHeight:0, margins:{left:0.45, right:0.45, top:0.5, bottom:0.6, header:0.2, footer:0.25}},
@@ -3313,7 +3317,12 @@ async function exportCustomsPo(d){
   if(terms.length){
     r++;
     k.put(r++, 1, N, 'TERMS & CONDITIONS', {fill:navy, font:onNavy});
-    terms.forEach(([key, val])=>{ k.label(r, 1, 2, key); k.put(r, 3, N, String(val).replace(/\n/g, ', ')); k.fit(r++, [[val, 70]]); });
+    terms.forEach(([key, val])=>{
+      const multi = key==='Conditions';   // numbered lines stay on their own lines
+      k.label(r, 1, 2, key); k.put(r, 3, N, multi ? val : String(val).replace(/\n/g, ', '));
+      if(multi) ws.getRow(r++).height = String(val).split('\n').reduce((h, x)=>h + Math.ceil((x.length || 1) / 70) * 15, 0);
+      else k.fit(r++, [[val, 70]]);
+    });
   }
   r++;
   plain(r, 1, 3, 'For ' + buyerName.toUpperCase(), {bold:true});
@@ -3337,7 +3346,8 @@ async function exportCustomsPo(d){
 
 /* PO for customs: the importer's PO at CIF unit prices, laid out like the customs-filing copy. */
 function printCustomsPo(d){
-  const {s, b, v, c, t, cur, groups, buyerName, terms, poDate, piDate, contact:contactParts} = customsPoParts(d);
+  const {s, b, v, c, t, cur, groups, buyerName, terms:baseTerms, conditions, poDate, piDate, contact:contactParts} = customsPoParts(d);
+  const terms = conditions ? [...baseTerms, ['Conditions', conditions]] : baseTerms;
   const e = escapeHtml, br = x => e(x).replace(/\n/g,'<br>');
   const itemRows = groups.map((g, gi)=>g.rows.map((i, k)=>{
     const l = d.lines[i], x = c.rows[i], q = toNum(l.qty);
