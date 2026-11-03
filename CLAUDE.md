@@ -20,9 +20,10 @@ Firestore runs with a persistent on-device cache (IndexedDB, multi-tab); sign-ou
 
 ## Business rules
 - Gross sales and total cost include GST. Gross profit = gross − cost. Net profit = gross profit / (1 + GST%/100). GST is 18% or 5% (blank in bulk upload = 0%).
-- Incentive = 5% of net profit, only for orders with status "Payment received"; counted in the order's incentive month (carry over moves it to next month; push back reverses).
+- Incentive (Excel Traders, `incentive:'netSales'` in COMPANIES; `applySalesIncentive` / `renderSalesIncentives`): strictly per salesman per ledger month, no carry over or push back. Net sales = gross sales / (1 + GST%/100); all of the salesman's orders that month count, whatever their status. Month net sales below the threshold (`meta/settings.salesThreshold`, default ₹1,00,000) → every order that month is Not eligible and locked automatically (computed, not stored). Otherwise incentive = rate (`salesRate`, default 1.5%) × (net sales − threshold), shared across the month's orders by net sales.
+- Order statuses (`paymentStatus`): 'none' = Pending; 'full' = Issue incentive (issues that order's share, locks); 'noteligible' = Not eligible (locks). A locked order must be unlocked (lock icon) before its status can change.
+- (The per-order 5%-of-net-profit incentive with carry over is still in the code for companies without `incentive:'netSales'`.)
 - Salesman Y (Yahya) is the owner (`NON_INCENTIVE_REPS` in public/index.html): never eligible. New salesmen are eligible automatically.
-- A received order is locked (lock icon) to prevent double issuance; it must be unlocked before its status can change.
 - Financial year = Indian FY (1 Apr – 31 Mar).
 - True net profit = total net profit − (monthly expenses total × number of months that have orders).
 - Bulk upload template columns: Order Ref, Channel, Salesman, Month (YYYY-MM or 1-12), GST %, Gross Sales, Total Cost, Notes. Parse dates from raw Excel serials (no `cellDates`; IST timezone bug).

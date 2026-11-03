@@ -226,6 +226,7 @@ label{display:block;font-size:12px;color:var(--ink-soft);margin-bottom:5px;font-
 .panel-chart.tall{height:300px;}
 tfoot .tot-row td{padding:12px 16px;font-weight:700;background:var(--accent-soft);color:var(--accent-ink);border-top:2px solid var(--accent);}
 tr .status-cell{display:flex;align-items:center;gap:6px;}
+tr .status-cell select{min-width:170px;}
 .inc-lock{color:var(--ink-faint);}
 .inc-lock.locked{color:var(--positive);}
 .inc-lock:hover{background:var(--surface-sunk);color:var(--ink);}
@@ -446,10 +447,42 @@ function computeOrder(o){
     else { incentive = round2(netProfit * rate / 100); }
   }
   const incMonth = o.incentiveMonth || o.ledgerMonth || '';
-  return {...o, incMonth, grossSales, gstRate, totalCost, status, grossProfit, netProfit, incentive, incentiveNote};
+  const netSales = round2(grossSales / (1 + gstRate/100));
+  return {...o, incMonth, grossSales, gstRate, totalCost, status, grossProfit, netProfit, netSales, incentive, incentiveNote};
 }
 
-function computedOrders(){ return state.orders.map(computeOrder); }
+function computedOrders(){
+  const orders = state.orders.map(computeOrder);
+  if(company().incentive==='netSales') applySalesIncentive(orders);
+  return orders;
+}
+
+/* Incentive on net sales (company incentive:'netSales'), strictly per salesman per ledger month.
+   Every order of the month counts toward its net sales, whatever its status. Below the threshold all
+   of that salesman's orders that month are not eligible and locked; otherwise
+   rate% × (net sales − threshold) is shared across the month's orders by net sales, and an order's
+   share is issued when it is marked "Issue incentive". */
+const salesIncentiveRate = () => state.settings.salesRate ?? 1.5;
+const salesIncentiveThreshold = () => state.settings.salesThreshold ?? 100000;
+function applySalesIncentive(orders){
+  const rate = salesIncentiveRate(), threshold = salesIncentiveThreshold(), months = {};
+  orders.forEach(o=>{
+    if(isNonIncentiveRep(o.rep)) return;
+    const k = o.rep + '|' + (o.ledgerMonth||'');
+    (months[k] = months[k] || {net:0}).net += o.netSales;
+  });
+  Object.values(months).forEach(m=>{ m.below = m.net < threshold; m.incentive = m.below ? 0 : round2((m.net - threshold) * rate / 100); });
+  orders.forEach(o=>{
+    o.incMonth = o.ledgerMonth || '';
+    const m = months[o.rep + '|' + o.incMonth];
+    o.monthNet = m ? round2(m.net) : 0;
+    o.autoNE = !!(m && m.below);
+    o.share = m && m.net ? round2(m.incentive * o.netSales / m.net) : 0;
+    if(o.autoNE) o.status = 'noteligible';
+    o.incentive = o.status==='full' ? o.share : 0;
+    o.incentiveNote = '';
+  });
+}
 
 function fmtMoney(n){
   if(n === null || n === undefined || isNaN(n)) return '—';
@@ -485,9 +518,11 @@ const STATUS_LABELS = {full:'Payment received', partial:'Pending', none:'Pending
    window.fb = {db, collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, onSnapshot, query, limit}
    and calls startApp() once the user is signed in. */
 /* Companies share users and the app; each has its own data under companies/{id}/.
-   bizSplit: dashboard pies and the Incentives filter split Glass vs Lifting; without it they split by channel. */
+   bizSplit: dashboard pies and the Incentives filter split Glass vs Lifting; without it they split by channel.
+   incentive:'netSales': incentive on monthly net sales above a threshold (applySalesIncentive) instead of
+   a % of each order's net profit. */
 const COMPANIES = [
-  {id:'excel', name:'Excel', suffix:'Traders'},
+  {id:'excel', name:'Excel', suffix:'Traders', incentive:'netSales'},
 ];
 const LAST_COMPANY_KEY = 'ledger.company';
 function readLastCompany(){
@@ -1820,7 +1855,196 @@ function incentiveTabs(){
   state.orders.forEach(o=>{ if(o.incentiveMonth) set.add(o.incentiveMonth); });
   return [...set].sort();
 }
+const LOCK_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg>';
+const UNLOCK_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 017.5-2"/></svg>';
+
+/* Incentives on net sales (see applySalesIncentive): month by month per salesman, no carry over.
+   Statuses: Pending; Issue incentive (locks); Not eligible (locks, and automatic below the threshold). */
+function renderSalesIncentives(page){
+  const tabs = allMonthTabs();
+  if(incentiveMonth === null) incentiveMonth = tabs.length ? tabs[tabs.length-1] : 'all';
+  if(incentiveMonth !== 'all' && !tabs.includes(incentiveMonth)) incentiveMonth = 'all';
+  const rate = salesIncentiveRate(), threshold = salesIncentiveThreshold();
+  const allOrders = computedOrders();
+  const monthOrders = allOrders.filter(o=>!isNonIncentiveRep(o.rep) && (incentiveMonth==='all' || o.incMonth===incentiveMonth));
+  const repCodes = [...new Set(monthOrders.map(o=>o.rep))].sort((a,b)=>repName(a).localeCompare(repName(b)));
+  if(incentiveRep !== 'all' && !repCodes.includes(incentiveRep)) incentiveRep = 'all';
+  const repOrders = incentiveRep==='all' ? monthOrders : monthOrders.filter(o=>o.rep===incentiveRep);
+  const chCodes = [...new Set(repOrders.map(o=>o.channel))];
+  if(incentiveChannel && !chCodes.includes(incentiveChannel)) incentiveChannel = '';
+  const orders = (incentiveChannel ? repOrders.filter(o=>o.channel===incentiveChannel) : repOrders)
+    .slice().sort((a,b)=>String(a.incMonth).localeCompare(String(b.incMonth)) || orderNum(a.ref)-orderNum(b.ref));
+
+  // one row per salesman per month: the month's figures always use all of that salesman's orders
+  const months = new Map();
+  repOrders.forEach(o=>{
+    const k = o.incMonth + '|' + o.rep;
+    if(!months.has(k)) months.set(k, {month:o.incMonth, rep:o.rep, net:o.monthNet, below:o.autoNE, due:0, issued:0, pending:0, orders:0});
+    const m = months.get(k);
+    m.orders++;
+    if(!o.autoNE && o.status!=='noteligible') m.due += o.share;
+    if(o.status==='full') m.issued += o.incentive;
+    if(!o.autoNE && o.status!=='full' && o.status!=='noteligible') m.pending++;
+  });
+  const summary = [...months.values()].sort((a,b)=>b.month.localeCompare(a.month) || repName(a.rep).localeCompare(repName(b.rep)));
+  const totIssued = round2(orders.reduce((t,o)=>t+o.incentive,0));
+  const totDue = round2(orders.reduce((t,o)=>t+(o.autoNE || o.status==='noteligible' ? 0 : o.share),0));
+  const totGross = round2(orders.reduce((t,o)=>t+o.grossSales,0));
+  const totNet = round2(orders.reduce((t,o)=>t+o.netSales,0));
+
+  const isLocked = o => o.autoNE || ((o.status==='full' || o.status==='noteligible') && o.incentiveLocked!==false);
+  const statusSel = o => {
+    if(o.autoNE) return `<div class="status-cell"><select disabled><option>Not eligible (auto)</option></select><span class="icon-btn locked" title="${escapeAttr(repName(o.rep))}'s net sales for ${escapeAttr(monthLabel(o.incMonth))} are below ${escapeAttr(fmtMoney(threshold))}">${LOCK_SVG}</span></div>`;
+    const locked = isLocked(o), lockable = o.status==='full' || o.status==='noteligible';
+    return `<div class="status-cell"><select class="inc-status" data-id="${o.id}" ${locked?'disabled':''}>
+      <option value="none" ${!lockable?'selected':''}>Pending</option>
+      <option value="full" ${o.status==='full'?'selected':''}>Issue incentive</option>
+      <option value="noteligible" ${o.status==='noteligible'?'selected':''}>Not eligible</option>
+    </select>${lockable ? `<button class="icon-btn inc-lock ${locked?'locked':''}" data-id="${o.id}" title="${locked?'Locked — click to unlock':'Unlocked — click to lock'}">${locked ? LOCK_SVG : UNLOCK_SVG}</button>` : ''}</div>`;
+  };
+  const bulkable = orders.filter(o=>!isLocked(o));
+
+  page.innerHTML = `
+    <div class="pagehead">
+      <div><h1>Incentives</h1><p>${fmtQty(rate)}% of each salesman's monthly net sales (excluding GST) above ${fmtMoney(threshold)}, owners excluded. Below ${fmtMoney(threshold)} the month's orders are not eligible. The month's incentive is shared across its orders by net sales; "Issue incentive" issues an order's share and locks it.</p></div>
+      <div class="actions"><button class="btn" id="btn-export">Export CSV</button></div>
+    </div>
+    <div class="month-tabs" id="month-tabs">
+      <div class="month-tab ${incentiveMonth==='all'?'active':''}" data-month="all">All months</div>
+      ${tabs.map(m=>`<div class="month-tab ${incentiveMonth===m?'active':''}" data-month="${m}">${escapeHtml(monthLabel(m))}</div>`).join('')}
+    </div>
+    <div class="month-tabs" id="rep-tabs">
+      <div class="month-tab ${incentiveRep==='all'?'active':''}" data-rep="all">All salesmen</div>
+      ${repCodes.map(r=>`<div class="month-tab ${incentiveRep===r?'active':''}" data-rep="${escapeAttr(r)}">${escapeHtml(repName(r))}</div>`).join('')}
+    </div>
+    <div class="kpi-row" style="grid-template-columns:repeat(3,1fr);">
+      <div class="kpi hero"><div class="label">Incentive issued</div><div class="value num accent">${fmtMoney2(totIssued)}</div><div class="sub">of ${fmtMoney2(totDue)} earned in view</div></div>
+      <div class="kpi"><div class="label">Net sales in view</div><div class="value num">${fmtMoney(totNet)}</div><div class="sub">gross sales ${fmtMoney(totGross)}</div></div>
+      <div class="kpi"><div class="label">Orders issued</div><div class="value num">${orders.filter(o=>o.status==='full').length}</div><div class="sub">of ${orders.length} in view</div></div>
+    </div>
+    <h3 class="po-sec" style="margin:4px 0 8px;">By salesman and month</h3>
+    <div class="table-wrap" style="margin-bottom:22px;">
+      <table>
+        <thead><tr><th>Month</th><th>Salesman</th><th class="num">Orders</th><th class="num">Net sales</th><th class="num">Above ${fmtMoney(threshold)}</th><th class="num">Incentive (${fmtQty(rate)}%)</th><th class="num">Issued</th><th>Status</th></tr></thead>
+        <tbody>
+        ${summary.map(m=>`<tr>
+          <td>${escapeHtml(monthLabel(m.month))}</td>
+          <td>${escapeHtml(repName(m.rep))}</td>
+          <td class="num">${m.orders}</td>
+          <td class="num">${fmtMoney(m.net)}</td>
+          <td class="num">${m.below ? '—' : fmtMoney(m.net - threshold)}</td>
+          <td class="num">${m.below ? '—' : fmtMoney2(m.due)}</td>
+          <td class="num" style="color:var(--accent-ink);font-weight:600;">${fmtMoney2(m.issued)}</td>
+          <td>${m.below ? '<span class="pill pill-unpaid">Below threshold · not eligible</span>' : m.pending ? `<span class="pill pill-pending">${m.pending} order${m.pending!==1?'s':''} pending</span>` : '<span class="pill pill-paid">Done</span>'}</td>
+        </tr>`).join('') || `<tr><td colspan="8" class="empty">No orders for this selection.</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+    <div class="toolbar">
+      <h3 class="po-sec">Orders</h3>
+      <select id="f-inc-channel"><option value="">All channels</option>${chCodes.map(c=>`<option value="${escapeAttr(c)}" ${incentiveChannel===c?'selected':''}>${escapeHtml(chName(c))}</option>`).join('')}</select>
+      <div class="spacer"></div>
+      <span class="muted" style="font-size:12px;">${orders.length} order${orders.length!==1?'s':''} in view</span>
+    </div>
+    <div id="inc-bar" class="bulk-bar" style="display:none;">
+      <span id="inc-bar-count"></span>
+      <select id="inc-bar-action" style="width:auto;min-width:200px;">
+        <option value="none">Set to Pending</option>
+        <option value="full">Issue incentive</option>
+        <option value="noteligible">Set to Not eligible</option>
+      </select>
+      <button class="btn btn-primary btn-sm" id="inc-bar-apply">Apply to selected</button>
+      <button class="btn btn-sm" id="inc-bar-clear">Clear</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th style="width:34px;"><input type="checkbox" id="inc-all" style="width:auto;" title="Select all in view"></th><th>Order ref</th><th>Salesman</th><th>Channel</th><th class="num">Gross sales</th><th class="num">Net sales</th><th class="num">Incentive share</th><th>Status</th></tr></thead>
+        <tbody>
+        ${orders.map(o=>`
+          <tr>
+            <td><input type="checkbox" class="inc-sel" data-id="${o.id}" style="width:auto;" ${incSelected.has(o.id)?'checked':''} ${isLocked(o)?'disabled':''}></td>
+            <td class="ref">${escapeHtml(o.ref)}<div class="sub">${escapeHtml(monthLabel(o.incMonth))}</div></td>
+            <td>${escapeHtml(repName(o.rep))}</td>
+            <td>${escapeHtml(chName(o.channel))}</td>
+            <td class="num">${fmtMoney(o.grossSales)}</td>
+            <td class="num">${fmtMoney(o.netSales)}</td>
+            <td class="num" style="${o.status==='full'?'color:var(--accent-ink);font-weight:600;':''}">${o.autoNE || o.status==='noteligible' ? '—' : fmtMoney2(o.share)}</td>
+            <td>${statusSel(o)}</td>
+          </tr>`).join('') || `<tr><td colspan="8" class="empty">No orders for this selection.</td></tr>`}
+        </tbody>
+        ${orders.length ? `<tfoot><tr class="tot-row">
+          <td colspan="4">Total · ${orders.length} order${orders.length!==1?'s':''}</td>
+          <td class="num">${fmtMoney(totGross)}</td>
+          <td class="num">${fmtMoney(totNet)}</td>
+          <td class="num">${fmtMoney2(totIssued)}</td>
+          <td class="muted" style="font-size:12px;">issued of ${fmtMoney2(totDue)}</td>
+        </tr></tfoot>` : ''}
+      </table>
+    </div>`;
+
+  page.querySelectorAll('#month-tabs .month-tab').forEach(t=>t.addEventListener('click', ()=>{ incentiveMonth = t.dataset.month; renderSalesIncentives(page); }));
+  page.querySelectorAll('#rep-tabs .month-tab').forEach(t=>t.addEventListener('click', ()=>{ incentiveRep = t.dataset.rep; incentiveChannel = ''; renderSalesIncentives(page); }));
+  document.getElementById('f-inc-channel').addEventListener('change', e=>{ incentiveChannel = e.target.value; renderSalesIncentives(page); });
+  const patchFor = value => value==='full' ? {paymentStatus:'full', incentiveLocked:true, incentiveMonth:null}
+    : value==='noteligible' ? {paymentStatus:'noteligible', incentiveLocked:true, incentiveMonth:null}
+    : {paymentStatus:'none', incentiveLocked:false, incentiveMonth:null};
+  const toastFor = value => value==='full' ? 'Incentive issued and locked' : value==='noteligible' ? 'Marked not eligible and locked' : 'Marked pending';
+  page.querySelectorAll('.inc-status').forEach(sel=>sel.addEventListener('change', async ()=>{
+    const o = allOrders.find(x=>x.id===sel.dataset.id);
+    if(!o) return;
+    if(isLocked(o)){ showToast('Locked — unlock first'); renderSalesIncentives(page); return; }
+    await updateOrderField(o.id, patchFor(sel.value));
+    showToast(toastFor(sel.value));
+  }));
+  page.querySelectorAll('.inc-lock').forEach(btn=>btn.addEventListener('click', async ()=>{
+    const o = allOrders.find(x=>x.id===btn.dataset.id); if(!o) return;
+    const nowLocked = isLocked(o);
+    await updateOrderField(o.id, {incentiveLocked: !nowLocked});
+    showToast(nowLocked ? 'Unlocked — you can change the status now' : 'Locked');
+  }));
+
+  // multi-select + bulk status change (locked orders can't be selected)
+  const visibleIds = new Set(bulkable.map(o=>o.id));
+  [...incSelected].forEach(id=>{ if(!visibleIds.has(id)) incSelected.delete(id); });
+  const bar = document.getElementById('inc-bar'), allBox = document.getElementById('inc-all');
+  const refreshBar = () => {
+    bar.style.display = incSelected.size ? 'flex' : 'none';
+    document.getElementById('inc-bar-count').textContent = incSelected.size + ' selected';
+    allBox.checked = bulkable.length>0 && incSelected.size===bulkable.length;
+    allBox.indeterminate = incSelected.size>0 && incSelected.size<bulkable.length;
+    allBox.disabled = !bulkable.length;
+  };
+  page.querySelectorAll('.inc-sel').forEach(cb=>cb.addEventListener('change', ()=>{ cb.checked ? incSelected.add(cb.dataset.id) : incSelected.delete(cb.dataset.id); refreshBar(); }));
+  allBox.addEventListener('change', ()=>{
+    if(allBox.checked) bulkable.forEach(o=>incSelected.add(o.id)); else incSelected.clear();
+    page.querySelectorAll('.inc-sel').forEach(cb=>{ cb.checked = incSelected.has(cb.dataset.id); });
+    refreshBar();
+  });
+  document.getElementById('inc-bar-clear').addEventListener('click', ()=>{ incSelected.clear(); page.querySelectorAll('.inc-sel').forEach(cb=>{ cb.checked=false; }); refreshBar(); });
+  document.getElementById('inc-bar-apply').addEventListener('click', ()=>{
+    const value = document.getElementById('inc-bar-action').value;
+    const todo = bulkable.filter(o=>incSelected.has(o.id));
+    if(!todo.length){ showToast('Nothing selected'); return; }
+    showConfirm('Apply to '+todo.length+' order'+(todo.length!==1?'s':'')+'?', document.querySelector('#inc-bar-action option:checked').textContent + (value==='none' ? '.' : '. The orders will be locked.'), async ()=>{
+      for(let i=0;i<todo.length;i+=20) await Promise.all(todo.slice(i,i+20).map(o=>updateOrderField(o.id, patchFor(value))));
+      incSelected.clear();
+      showToast('Updated '+todo.length+' order'+(todo.length!==1?'s':''));
+    }, 'Apply', true);
+  });
+  refreshBar();
+
+  document.getElementById('btn-export').addEventListener('click', ()=>{
+    const csvCell = v => /[",\n]/.test(String(v)) ? '"' + String(v).replace(/"/g,'""') + '"' : String(v);
+    const head = ['Month','Salesman','Salesman month net sales','Order Ref','Channel','Gross Sales','Net Sales','Incentive share','Status','Incentive issued'];
+    const lines = orders.map(o=>[monthLabel(o.incMonth), repName(o.rep), o.monthNet, o.ref, chName(o.channel), o.grossSales, o.netSales,
+      o.autoNE || o.status==='noteligible' ? 0 : o.share, o.autoNE ? 'Not eligible (below threshold)' : o.status==='full' ? 'Issued' : o.status==='noteligible' ? 'Not eligible' : 'Pending', o.incentive].map(csvCell).join(','));
+    downloadBlob(new Blob([head.join(',') + '\n' + lines.join('\n')], {type:'text/csv'}), 'incentive-report.csv');
+    showToast('Export ready');
+  });
+}
+
 function renderIncentives(page){
+  if(company().incentive==='netSales') return renderSalesIncentives(page);
   const tabs = incentiveTabs();
   if(incentiveMonth === null) incentiveMonth = tabs.length ? tabs[tabs.length-1] : 'all';
   if(incentiveMonth !== 'all' && !tabs.includes(incentiveMonth)) incentiveMonth = 'all';
@@ -2040,10 +2264,19 @@ function renderSettings(page){
 
     <div class="panel" style="margin-bottom:18px;max-width:420px;">
       <h3>Incentive rate</h3>
+      ${company().incentive==='netSales' ? `
+      <div class="field">
+        <label>Percentage of a salesman's monthly net sales above the threshold</label>
+        <input type="number" id="s-rate" step="0.01" value="${salesIncentiveRate()}">
+      </div>
+      <div class="field">
+        <label>Monthly net sales threshold (₹, excluding GST)</label>
+        <input type="number" id="s-threshold" step="1000" value="${salesIncentiveThreshold()}">
+      </div>` : `
       <div class="field">
         <label>Percentage of net profit paid on fully-recovered orders</label>
         <input type="number" id="s-rate" step="0.1" value="${state.settings.incentiveRate ?? 5}">
-      </div>
+      </div>`}
       <button class="btn btn-primary btn-sm" id="s-rate-save">Save rate</button>
     </div>
 
@@ -2099,7 +2332,11 @@ function renderSettings(page){
   document.getElementById('add-ch').addEventListener('click', ()=>addEntry('ch'));
   document.getElementById('s-rate-save').addEventListener('click', async ()=>{
     const v = parseFloat(document.getElementById('s-rate').value);
-    await saveSettings({...state.settings, incentiveRate: isNaN(v)?5:v});
+    if(company().incentive==='netSales'){
+      const th = parseFloat(document.getElementById('s-threshold').value);
+      await saveSettings({...state.settings, salesRate: isNaN(v)?1.5:v, salesThreshold: isNaN(th)?100000:th});
+    }
+    else await saveSettings({...state.settings, incentiveRate: isNaN(v)?5:v});
     showToast('Incentive rate updated');
   });
   page.querySelectorAll('.s-rep-name').forEach(inp=>{
