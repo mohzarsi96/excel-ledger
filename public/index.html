@@ -302,8 +302,10 @@ td.ref .sub{font-size:11px;color:var(--ink-faint);font-family:'IBM Plex Sans',sa
 .po-table td{padding:5px 8px;}
 .po-table td.ref{min-width:190px;}
 .po-table input.cell,.po-table select.cell{padding:5px 7px;font-size:12.5px;}
-.po-table input.n{width:84px;text-align:right;font-family:'IBM Plex Mono',monospace;}
-.po-table input.sp{width:92px;}
+.po-table input.n{width:100%;min-width:84px;text-align:right;font-family:'IBM Plex Mono',monospace;}
+.po-table input.sp{min-width:92px;}
+/* number boxes fill their column and their digits line up with the right-aligned header text */
+.po-table td:has(> input.n){padding-right:0;}
 .row-new td,.charge-row.row-new{animation:rowFlash 1.8s ease;}
 @keyframes rowFlash{0%,40%{background:var(--accent-soft);}100%{background:transparent;}}
 .po-kpis{grid-template-columns:repeat(7,1fr);gap:10px;}
@@ -2205,7 +2207,8 @@ const productLabel = p => p.spec ? p.name + ' — ' + p.spec : (p.name||'');
    On a PO line the quantity and price are in SQM: cases × pcs per case = pcs, pcs × SQM per pc = qty,
    so FOB, duty, unit cost and selling prices all come out per SQM. */
 const sqmPerPc = p => p && p.altUnit==='SQM' && toNum(p.width) && toNum(p.height) ? toNum(p.width) * toNum(p.height) / 1e6 : 0;
-const SHEET_FIELDS = ['altUnit','width','height','sqmPerPc','pcsPerCase','cases','pcs'];
+const fmtSqm = n => toNum(n).toLocaleString('en-IN',{minimumFractionDigits:3, maximumFractionDigits:3});
+const SHEET_FIELDS =['altUnit','width','height','sqmPerPc','pcsPerCase','cases','pcs'];
 function lineUnit(l){
   if(l.altUnit) return l.altUnit;
   const p = state.products.find(x=>x.id===l.productId);
@@ -2445,7 +2448,7 @@ function renderPoEditor(page){
     <div class="toolbar" style="margin-bottom:8px;"><h3 class="po-sec">Items</h3><div class="spacer"></div><button class="btn btn-sm" id="po-items-template">Download template</button><button class="btn btn-sm" id="po-items-upload">Upload items</button><input type="file" id="po-items-file" accept=".xlsx,.xls,.csv" hidden><button class="btn btn-sm po-add-line">+ Add item</button></div>
     <div class="table-wrap po-table" style="margin-bottom:22px;">
       <table>
-        <thead><tr><th>#</th><th>Product &amp; description</th><th class="num">Cases</th><th class="num">Pcs</th><th class="num">Qty</th><th>Unit</th><th class="num">Unit price (${escapeHtml(cur)} per unit)</th><th class="num">Amount (${escapeHtml(cur)})</th>
+        <thead><tr><th>#</th><th>Product &amp; description</th><th class="num">Cases</th><th class="num">Pcs</th><th class="num">Qty</th><th>Unit</th><th class="num">Price / unit (${escapeHtml(cur)})</th><th class="num">Amount (${escapeHtml(cur)})</th>
           <th class="num">NW/unit (kg)</th><th class="num">GW/unit (kg)</th><th class="num">Vol/unit (m³)</th><th class="num">Total NW</th><th class="num">Total GW</th><th class="num">Total vol</th><th>HS code</th><th></th></tr></thead>
         <tbody>
         ${d.lines.map((l,i)=>`<tr>
@@ -2453,7 +2456,7 @@ function renderPoEditor(page){
           <td><select class="cell" ${lineIn(i,'productId')} style="min-width:360px;">${prodOpts(l)}</select>${l.altUnit ? `<div class="hint" style="margin:2px 0 0;">${escapeHtml([toNum(l.width) ? `${fmtQty(l.width,0)} × ${fmtQty(l.height,0)} mm` : '', `${fmtQty(l.sqmPerPc,4)} SQM/pc`, toNum(l.pcsPerCase) ? `${fmtQty(l.pcsPerCase,0)} pcs/case` : 'no pcs per case in Masters'].filter(Boolean).join(' · '))}</div>` : ''}</td>
           <td>${l.altUnit && toNum(l.pcsPerCase) ? numIn(i,'cases',l) : '<span class="muted">—</span>'}</td>
           <td>${l.altUnit ? numIn(i,'pcs',l) : '<span class="muted">—</span>'}</td>
-          <td>${l.altUnit ? `<div class="num" title="pcs × SQM per pc">${fmtQty(l.qty,4)}</div>` : numIn(i,'qty',l)}</td>
+          ${l.altUnit ? `<td class="num" title="pcs × SQM per pc">${fmtSqm(l.qty)}</td>` : `<td>${numIn(i,'qty',l)}</td>`}
           <td>${escapeHtml(lineUnit(l))}</td>
           <td>${numIn(i,'price',l)}</td>
           <td class="num">${fmtFx(c.rows[i].fob)}</td>
@@ -2470,7 +2473,7 @@ function renderPoEditor(page){
         ${d.lines.length ? `<tfoot><tr class="tot-row">
           <td colspan="2">Total · ${d.lines.length} item${d.lines.length!==1?'s':''}</td>
           <td class="num">${sheetTot.cases ? fmtQty(sheetTot.cases,3) : ''}</td><td class="num">${sheetTot.pcs ? fmtQty(sheetTot.pcs,0) : ''}</td>
-          <td class="num">${fmtQty(t.qty)}</td><td>${units.length===1 ? escapeHtml(units[0]) : ''}</td><td></td><td class="num">${fmtFx(t.fob)}</td><td></td><td></td><td></td>
+          <td class="num">${units.length===1 && units[0]==='SQM' ? fmtSqm(t.qty) : fmtQty(t.qty)}</td><td>${units.length===1 ? escapeHtml(units[0]) : ''}</td><td></td><td class="num">${fmtFx(t.fob)}</td><td></td><td></td><td></td>
           <td class="num">${fmtQty(t.nw)}</td><td class="num">${fmtQty(t.gw)}</td><td class="num">${fmtQty(t.vol,3)}</td><td></td><td></td>
         </tr></tfoot>` : ''}
       </table>
@@ -2486,7 +2489,7 @@ function renderPoEditor(page){
         ${d.lines.map((l,i)=>{ const x = c.rows[i]; return `<tr>
           <td class="muted">${i+1}</td>
           <td class="ref">${escapeHtml(l.item||'—')}${specWithSheet(l)?`<div class="sub">${escapeHtml(specWithSheet(l))}</div>`:''}</td>
-          <td class="num">${fmtQty(l.qty)} ${escapeHtml(lineUnit(l))}</td>
+          <td class="num">${l.altUnit ? fmtSqm(l.qty) : fmtQty(l.qty)} ${escapeHtml(lineUnit(l))}</td>
           <td>${escapeHtml(l.hs||'—')}</td>
           <td class="num">${x.apta ? fmtQty(x.apta)+'%' : '—'}</td>
           <td class="num">${fmtFx(x.cifUsd)}</td>
