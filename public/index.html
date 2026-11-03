@@ -3400,6 +3400,7 @@ function printCustomsPo(d){
 }
 
 /* Proforma and commercial invoices: the supplier's document, on the supplier's letterhead, addressed to us as the buyer.
+   The proforma prices lines FOB and adds freight and insurance at the bottom; the commercial invoice prices them CIF.
    Shared by the printout and the Excel file. kind = 'pi' | 'ci'. */
 function invoiceParts(d, kind){
   const {b, v, c, t, cur, buyerName, terms, poDate} = customsPoParts(d);
@@ -3408,10 +3409,15 @@ function invoiceParts(d, kind){
   const no = pi ? d.piNumber : (d.ciNumber || d.piNumber), date = pi ? d.piDate : (d.ciDate || d.piDate);
   const rows = d.lines.map((l,i)=>{
     const x = c.rows[i], q = toNum(l.qty);
-    return {item:l.item||'', spec:specWithSheet(l), hs:l.hs||'', qty:q, unit:lineUnit(l), price:round3(q ? x.cifUsd/q : 0), amount:round2(x.cifUsd)};
+    return pi ? {item:l.item||'', spec:specWithSheet(l), hs:l.hs||'', qty:q, unit:lineUnit(l), price:isBlank(l.price) ? 0 : round3(l.price), amount:round2(x.fob)}
+      : {item:l.item||'', spec:specWithSheet(l), hs:l.hs||'', qty:q, unit:lineUnit(l), price:round3(q ? x.cifUsd/q : 0), amount:round2(x.cifUsd)};
   });
+  const basis = pi ? 'FOB' : 'CIF';
   return {title: pi ? 'PROFORMA INVOICE' : 'COMMERCIAL INVOICE', file: pi ? 'proforma-invoice' : 'commercial-invoice',
-    v, t, cur, rows, buyerName, terms, no:no||'',
+    v, t, cur, rows, buyerName, terms, no:no||'', basis,
+    // bottom lines: label, amount, grand total?
+    totals: pi ? [['TOTAL FOB', round2(t.fob)], ['Freight', round2(toNum(d.freight))], ['Insurance', round2(toNum(d.insurance))], ['TOTAL CIF', round2(t.cifUsd), true]]
+      : [['TOTAL CIF', round2(t.cifUsd), true]],
     supplierLines: [(v.address||'').trim(), [v.phone && 'Tel: ' + v.phone, v.email].filter(Boolean).join('  |  '), v.country].filter(Boolean),
     buyerLines: [(b.address||'').trim(), [b.iec && 'IEC: '+b.iec, b.gstin && 'GSTIN: '+b.gstin, b.pan && 'PAN: '+b.pan].filter(Boolean).join('  |  '),
       [b.phone && 'Tel: ' + b.phone, b.email].filter(Boolean).join('  |  ')].filter(Boolean),
@@ -3443,6 +3449,7 @@ function printInvoice(d, kind){
     .items td{border:1px solid #9aa7b8;padding:3px 6px;vertical-align:middle;} .items .sub{color:#444;font-size:10.5px;}
     .items .c{text-align:center;} .items .r{text-align:right;white-space:nowrap;}
     .items .tot td{font-weight:700;background:#dfe6ef;border-top:1.5px solid #1F3864;padding:4px 6px;}
+    .items .sum td{font-weight:600;padding:4px 6px;}
     .words{font-style:italic;padding:6px 8px;border-bottom:1px solid #9aa7b8;}
     .terms td{border:1px solid #9aa7b8;padding:4px 6px;vertical-align:top;} .terms td:first-child{background:#dfe6ef;font-weight:700;width:30%;}
     .sign{display:flex;justify-content:flex-end;padding:14px 8px 8px;} .sign>div{width:45%;text-align:right;}
@@ -3455,10 +3462,10 @@ function printInvoice(d, kind){
     <div class="sec">BUYER / CONSIGNEE</div>
     <div class="buyer"><b>${e(p.buyerName.toUpperCase())}</b>${p.buyerLines.map(x=>`<br>${br(x)}`).join('')}</div>
     <table class="items">
-      <thead><tr><th style="width:4%">#</th><th>Item / Description</th><th style="width:10%">HS Code</th><th style="width:10%">Qty</th><th style="width:6%">Unit</th><th style="width:13%">CIF Price (${e(cur)})</th><th style="width:15%">Total Amount CIF (${e(cur)})</th></tr></thead>
+      <thead><tr><th style="width:4%">#</th><th>Item / Description</th><th style="width:10%">HS Code</th><th style="width:10%">Qty</th><th style="width:6%">Unit</th><th style="width:13%">${p.basis} Price (${e(cur)})</th><th style="width:15%">Total Amount ${p.basis} (${e(cur)})</th></tr></thead>
       <tbody>${p.rows.map((x,i)=>`<tr><td class="c">${i+1}</td><td><b>${e(x.item)}</b>${x.spec?`<div class="sub">${e(x.spec)}</div>`:''}</td><td class="c">${e(x.hs)}</td>
         <td class="r">${fmtQty(x.qty)}</td><td class="c">${e(x.unit)}</td><td class="r">${fmtPrice(x.price)}</td><td class="r">${fmtFx(x.amount)}</td></tr>`).join('')}
-        <tr class="tot"><td colspan="3" class="r">TOTAL CIF</td><td class="r">${fmtQty(t.qty)}</td><td></td><td></td><td class="r">${cur==='USD'?'$':e(cur)+' '}${fmtFx(t.cifUsd)}</td></tr>
+        ${p.totals.map(([label, amt, grand], i)=>`<tr class="${grand || i===0 ? 'tot' : 'sum'}"><td colspan="3" class="r">${e(label)}</td><td class="r">${i===0 ? fmtQty(t.qty) : ''}</td><td></td><td></td><td class="r">${grand ? (cur==='USD'?'$':e(cur)+' ') : ''}${fmtFx(amt)}</td></tr>`).join('')}
       </tbody>
     </table>
     <div class="words">Amount in words: ${e(amountInWords(t.cifUsd, cur))}</div>
@@ -3487,7 +3494,7 @@ async function exportInvoice(d, kind){
   k.put(r++, 1, N, 'BUYER / CONSIGNEE', {fill:navy, font:onNavy});
   [p.buyerName.toUpperCase(), ...p.buyerLines].forEach((text, i)=>{ k.put(r, 1, N, text.replace(/\n/g, ', '), i===0 ? {font:{bold:true}} : {}); k.fit(r++, [[text, 95]]); });
   r++;
-  ['#','Item / Description','HS Code','Qty','Unit',`CIF Price (${cur})`,`Total Amount CIF (${cur})`]
+  ['#','Item / Description','HS Code','Qty','Unit',`${p.basis} Price (${cur})`,`Total Amount ${p.basis} (${cur})`]
     .forEach((h,i)=>k.put(r, i+1, i+1, h, {fill:navy, font:onNavy, align:{horizontal:'center'}}));
   ws.getRow(r++).height = 30;
   p.rows.forEach((x, i)=>{
@@ -3501,9 +3508,12 @@ async function exportInvoice(d, kind){
     ws.getRow(r++).height = Math.max(18, [x.item, x.spec].filter(Boolean).reduce((n, s)=>n + Math.ceil(s.length / 42), 0) * 15);
   });
   const tot = {fill:XL.band, font:{bold:true}};
-  k.put(r, 1, 3, 'TOTAL CIF', {...tot, align:{horizontal:'right'}});
-  k.put(r, 4, 4, t.qty, {...tot, fmt:XL_FMT.dec}); k.put(r, 5, 6, '', tot);
-  k.put(r, 7, 7, round2(t.cifUsd), {...tot, fmt:cur==='USD' ? '"$"#,##0.00' : XL_FMT.usd}); r++;
+  p.totals.forEach(([label, amt, grand], i)=>{
+    const st = grand || i===0 ? tot : {font:{bold:true}};
+    k.put(r, 1, 3, label, {...st, align:{horizontal:'right'}});
+    k.put(r, 4, 4, i===0 ? t.qty : '', {...st, fmt:XL_FMT.dec}); k.put(r, 5, 6, '', st);
+    k.put(r, 7, 7, amt, {...st, fmt:grand && cur==='USD' ? '"$"#,##0.00' : XL_FMT.usd}); r++;
+  });
   const words = 'Amount in words: ' + amountInWords(t.cifUsd, cur);
   k.put(r, 1, N, words, {font:{italic:true}}); k.fit(r++, [[words, 95]]);
   if(p.terms.length){
