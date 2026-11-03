@@ -3455,10 +3455,11 @@ const BULK_COLS = {
   altUnit:{head:'Alternate unit (SQM or blank)', match:n=>n.startsWith('altunit')||n.startsWith('alternateunit')},
   width:{head:'Width (mm)', num:true, match:n=>n.startsWith('width')},
   height:{head:'Height (mm)', num:true, match:n=>n.startsWith('height')},
+  thickness:{head:'Thickness (mm)', num:true, match:n=>n.startsWith('thick')},
   pcsPerCase:{head:'Qty per case (pcs)', num:true, match:n=>n.includes('percase')},
   cases:{head:'Cases (sheet products)', num:true, match:n=>n.startsWith('case')||n.startsWith('noofcase')},
 };
-const PRODUCT_UPLOAD = ['sku','name','spec','unit','hs','nw','gw','vol','lastPrice','altUnit','width','height','pcsPerCase'];
+const PRODUCT_UPLOAD = ['sku','name','spec','unit','hs','nw','gw','vol','lastPrice','altUnit','width','height','thickness','pcsPerCase'];
 const PO_ITEM_UPLOAD = ['sku','name','spec','cases','qty','price','nw','gw','vol','hs'];
 /* Same item name + description (ignoring case, spaces and punctuation) = same product. */
 const productKey = (name, spec) => normHeader(name) + '|' + normHeader(spec);
@@ -3605,7 +3606,7 @@ async function uploadProducts(file){
     ['name','spec','hs'].forEach(k=>{ if(o[k]) data[k] = o[k]; });
     if(o.unit) data.unit = o.unit.toUpperCase();
     if(o.altUnit) data.altUnit = o.altUnit.toUpperCase()==='SQM' ? 'SQM' : '';
-    ['nw','gw','vol','lastPrice','width','height','pcsPerCase'].forEach(k=>{ if(!isBlank(o[k])) data[k] = k==='lastPrice' ? round3(o[k]) : o[k]; });
+    ['nw','gw','vol','lastPrice','width','height','thickness','pcsPerCase'].forEach(k=>{ if(!isBlank(o[k])) data[k] = k==='lastPrice' ? round3(o[k]) : o[k]; });
     let p = sku ? bySku.get(sku) : null;
     if(!p){
       // same name + description: update it, taking the file's SKU if the product has none yet
@@ -3736,6 +3737,7 @@ const MASTERS = {
       {k:'pcsPerCase', label:'Qty per case (pcs, optional)', type:'num'},
       {k:'width', label:'Width (mm, optional)', type:'num'},
       {k:'height', label:'Height (mm, optional)', type:'num'},
+      {k:'thickness', label:'Thickness (mm, optional)', type:'num'},
       {k:'sqm', label:'SQM per pc (width × height)', type:'calc'},
       {k:'nw', label:'Net weight per unit (kg; per SQM for sheets)', type:'num'},
       {k:'gw', label:'Gross weight per unit (kg; per SQM for sheets)', type:'num'},
@@ -3747,7 +3749,8 @@ const MASTERS = {
       {label:'Item', cls:'ref', cell:p=>`${escapeHtml(p.name)}${p.spec?`<div class="sub">${escapeHtml(p.spec)}</div>`:''}`},
       {label:'Unit', cell:p=>escapeHtml(p.unit||'PCS') + (p.altUnit ? ` · ${escapeHtml(p.altUnit)}` : '')},
       {label:'Size / case', cell:p=>[
-        toNum(p.width) && toNum(p.height) ? `${fmtQty(p.width,0)} × ${fmtQty(p.height,0)} mm` + (sqmPerPc(p) ? `<div class="sub">${fmtQty(sqmPerPc(p),4)} SQM/pc</div>` : '') : '',
+        toNum(p.width) && toNum(p.height) ? `${fmtQty(p.width,0)} × ${fmtQty(p.height,0)}${toNum(p.thickness) ? ` × ${+toNum(p.thickness).toFixed(2)}` : ''} mm` + (sqmPerPc(p) ? `<div class="sub">${fmtQty(sqmPerPc(p),4)} SQM/pc</div>` : '') : '',
+        !(toNum(p.width) && toNum(p.height)) && toNum(p.thickness) ? `${+toNum(p.thickness).toFixed(2)} mm thick` : '',
         toNum(p.pcsPerCase) ? `<div class="sub">${fmtQty(p.pcsPerCase,0)} pcs/case</div>` : ''].join('') || '—'},
       {label:'HS code', cell:p=>escapeHtml(p.hs||'—')},
       {label:'NW/unit (kg)', num:true, cell:p=>isBlank(p.nw)?'—':fmtQty(p.nw)},
