@@ -2673,6 +2673,7 @@ function renderPoEditor(page){
         ${field('piDate','Invoice date','date')}
         ${field('ciNumber','Commercial invoice no. (blank = proforma no.)')}
         ${field('ciDate','Commercial invoice date','date')}
+        ${field('origin','Country of origin (blank = China)')}
         ${field('priceBasis','Price basis','text','span2')}
         ${field('shipment','Shipment','text','span2')}
         ${field('packing','Packing','text','span2')}
@@ -3441,7 +3442,7 @@ function invoiceParts(d, kind){
       [pi ? 'Proforma Invoice No.' : 'Invoice No.', no||'', 'Date', dmy(date)],
       ["Buyer's P.O. No.", d.poNumber||'', 'P.O. Date', poDate],
       ['Price Basis', d.priceBasis || d.deliveryTerms || 'CIF', 'Currency', cur],
-      ['Port of Loading', d.port||'', 'Country of Origin', v.country||''],
+      ['Port of Loading', d.port||'', 'Country of Origin', String(d.origin||'').trim() || 'China'],
     ],
   };
 }
