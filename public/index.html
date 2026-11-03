@@ -2200,6 +2200,42 @@ const fmtFx = n => (toNum(n)<0?'−':'') + Math.abs(toNum(n)).toLocaleString('en
 const fmtQty = (n, d=2) => toNum(n).toLocaleString('en-IN',{maximumFractionDigits:d});
 const vendorById = id => state.vendors.find(v=>v.id===id) || null;
 const productLabel = p => p.spec ? p.name + ' — ' + p.spec : (p.name||'');
+
+/* Sheet products (e.g. patterned glass): width × height in mm, pcs per case, and SQM as the alternate unit.
+   On a PO line the quantity and price are in SQM: cases × pcs per case = pcs, pcs × SQM per pc = qty,
+   so FOB, duty, unit cost and selling prices all come out per SQM. */
+const sqmPerPc = p => p && p.altUnit==='SQM' && toNum(p.width) && toNum(p.height) ? toNum(p.width) * toNum(p.height) / 1e6 : 0;
+const SHEET_FIELDS = ['altUnit','width','height','sqmPerPc','pcsPerCase','cases','pcs'];
+function lineUnit(l){
+  if(l.altUnit) return l.altUnit;
+  const p = state.products.find(x=>x.id===l.productId);
+  return String((p && p.unit) || 'PCS').toUpperCase();
+}
+/* "1830 × 2440 mm · 50 cases · 1,000 pcs" for a sheet line, '' otherwise. */
+const sheetNote = l => !l.altUnit ? '' : [
+  toNum(l.width) && toNum(l.height) ? `${fmtQty(l.width,0)} × ${fmtQty(l.height,0)} mm` : '',
+  toNum(l.cases) ? `${fmtQty(l.cases,3)} case${toNum(l.cases)!==1?'s':''}` : '',
+  `${fmtQty(l.pcs,0)} pcs`,
+].filter(Boolean).join(' · ');
+const specWithSheet = l => [l.spec, sheetNote(l)].filter(Boolean).join(' · ');
+/* Excel number format for a line's qty: "2,400.00 SQM" on sheet lines. */
+const xlQtyFmt = l => l.altUnit ? `#,##0.00 "${l.altUnit}"` : XL_FMT.num;
+/* Recalculates a sheet line after its cases (from 'cases') or pcs (from 'pcs') changed. */
+function setSheetQty(l, from){
+  const per = toNum(l.pcsPerCase);
+  if(from==='cases') l.pcs = isBlank(l.cases) ? '' : per ? Math.round(toNum(l.cases) * per) : l.pcs;
+  else l.cases = isBlank(l.pcs) || !per ? '' : Math.round(toNum(l.pcs) / per * 1000) / 1000;
+  l.qty = isBlank(l.pcs) ? '' : Math.round(toNum(l.pcs) * toNum(l.sqmPerPc) * 1e4) / 1e4;
+}
+/* Copies a product's sheet details onto a PO line (or clears them for an ordinary product). */
+function applySheet(l, p){
+  const sqm = sqmPerPc(p);
+  if(!sqm){ SHEET_FIELDS.forEach(k=>delete l[k]); return; }
+  Object.assign(l, {altUnit:'SQM', width:toNum(p.width), height:toNum(p.height), sqmPerPc:sqm, pcsPerCase:isBlank(p.pcsPerCase) ? '' : toNum(p.pcsPerCase)});
+  if(l.cases===undefined) l.cases = '';
+  if(l.pcs===undefined) l.pcs = '';
+  setSheetQty(l, !isBlank(l.cases) && toNum(l.pcsPerCase) ? 'cases' : 'pcs');
+}
 const byText = f => (a,b)=>String(f(a)||'').localeCompare(String(f(b)||''), undefined, {numeric:true});
 function todayISO(){
   const d = new Date();
@@ -2346,6 +2382,8 @@ function renderPoEditor(page){
   const lineIn = (i, k, extra) => `data-fk="l${i}-${k}" data-li="${i}" data-lf="${k}" ${extra||''}`;
   const numIn = (i, k, l) => `<input class="cell n" type="number" step="any" ${lineIn(i,k)} value="${escapeAttr(l[k]??'')}">`;
   const noRate = [...new Set(d.lines.filter((l,i)=>c.rows[i].noRate).map(l=>l.hs || 'no HS code'))];
+  const sheetTot = {cases:d.lines.reduce((s,l)=>s+(l.altUnit ? toNum(l.cases) : 0),0), pcs:d.lines.reduce((s,l)=>s+(l.altUnit ? toNum(l.pcs) : 0),0)};
+  const units = [...new Set(d.lines.map(lineUnit))];
 
   page.innerHTML = `
     <div class="pagehead">
@@ -2376,7 +2414,7 @@ function renderPoEditor(page){
         ${field('freight',`Freight (${escapeHtml(cur)})`,'number')}
         ${field('insurance',`Insurance (${escapeHtml(cur)})`,'number')}
       </div>
-      <label class="check-inline"><input type="checkbox" data-fk="h-claimApta" data-h="claimApta" ${d.claimApta?'checked':''}> Claim APTA concession: reduces BCD by each HS code's APTA % (needs a certificate of origin)</label>
+      <label class="check-inline"><input type="checkbox" data-fk="h-claimApta" data-h="claimApta" ${d.claimApta?'checked':''}> Claim APTA / SAFTA concession: reduces BCD by each HS code's APTA / SAFTA % (needs a certificate of origin)</label>
       <h3 style="margin-top:20px;">Customs</h3>
       <div class="po-grid">
         ${field('beNumber','Bill of Entry no.')}
@@ -2406,13 +2444,16 @@ function renderPoEditor(page){
     <div class="toolbar" style="margin-bottom:8px;"><h3 class="po-sec">Items</h3><div class="spacer"></div><button class="btn btn-sm" id="po-items-template">Download template</button><button class="btn btn-sm" id="po-items-upload">Upload items</button><input type="file" id="po-items-file" accept=".xlsx,.xls,.csv" hidden><button class="btn btn-sm po-add-line">+ Add item</button></div>
     <div class="table-wrap po-table" style="margin-bottom:22px;">
       <table>
-        <thead><tr><th>#</th><th>Product &amp; description</th><th class="num">Qty</th><th class="num">Unit price (${escapeHtml(cur)})</th><th class="num">Amount (${escapeHtml(cur)})</th>
+        <thead><tr><th>#</th><th>Product &amp; description</th><th class="num">Cases</th><th class="num">Pcs</th><th class="num">Qty</th><th>Unit</th><th class="num">Unit price (${escapeHtml(cur)} per unit)</th><th class="num">Amount (${escapeHtml(cur)})</th>
           <th class="num">NW/unit (kg)</th><th class="num">GW/unit (kg)</th><th class="num">Vol/unit (m³)</th><th class="num">Total NW</th><th class="num">Total GW</th><th class="num">Total vol</th><th>HS code</th><th></th></tr></thead>
         <tbody>
         ${d.lines.map((l,i)=>`<tr>
           <td class="muted">${i+1}</td>
-          <td><select class="cell" ${lineIn(i,'productId')} style="min-width:360px;">${prodOpts(l)}</select></td>
-          <td>${numIn(i,'qty',l)}</td>
+          <td><select class="cell" ${lineIn(i,'productId')} style="min-width:360px;">${prodOpts(l)}</select>${l.altUnit ? `<div class="hint" style="margin:2px 0 0;">${escapeHtml([toNum(l.width) ? `${fmtQty(l.width,0)} × ${fmtQty(l.height,0)} mm` : '', `${fmtQty(l.sqmPerPc,4)} SQM/pc`, toNum(l.pcsPerCase) ? `${fmtQty(l.pcsPerCase,0)} pcs/case` : 'no pcs per case in Masters'].filter(Boolean).join(' · '))}</div>` : ''}</td>
+          <td>${l.altUnit && toNum(l.pcsPerCase) ? numIn(i,'cases',l) : '<span class="muted">—</span>'}</td>
+          <td>${l.altUnit ? numIn(i,'pcs',l) : '<span class="muted">—</span>'}</td>
+          <td>${l.altUnit ? `<div class="num" title="pcs × SQM per pc">${fmtQty(l.qty,4)}</div>` : numIn(i,'qty',l)}</td>
+          <td>${escapeHtml(lineUnit(l))}</td>
           <td>${numIn(i,'price',l)}</td>
           <td class="num">${fmtFx(c.rows[i].fob)}</td>
           <td>${numIn(i,'nw',l)}</td>
@@ -2423,11 +2464,12 @@ function renderPoEditor(page){
           <td class="num">${fmtQty(toNum(l.vol)*toNum(l.qty),3)}</td>
           <td><select class="cell" ${lineIn(i,'hs')}>${hsOpts(l.hs)}</select></td>
           <td><button class="icon-btn po-del-line" data-li="${i}" title="Remove item">✕</button></td>
-        </tr>`).join('') || `<tr><td colspan="13" class="empty">No items yet. Use "+ Add item" or "Upload items".</td></tr>`}
+        </tr>`).join('') || `<tr><td colspan="16" class="empty">No items yet. Use "+ Add item" or "Upload items".</td></tr>`}
         </tbody>
         ${d.lines.length ? `<tfoot><tr class="tot-row">
           <td colspan="2">Total · ${d.lines.length} item${d.lines.length!==1?'s':''}</td>
-          <td class="num">${fmtQty(t.qty)}</td><td></td><td class="num">${fmtFx(t.fob)}</td><td></td><td></td><td></td>
+          <td class="num">${sheetTot.cases ? fmtQty(sheetTot.cases,3) : ''}</td><td class="num">${sheetTot.pcs ? fmtQty(sheetTot.pcs,0) : ''}</td>
+          <td class="num">${fmtQty(t.qty)}</td><td>${units.length===1 ? escapeHtml(units[0]) : ''}</td><td></td><td class="num">${fmtFx(t.fob)}</td><td></td><td></td><td></td>
           <td class="num">${fmtQty(t.nw)}</td><td class="num">${fmtQty(t.gw)}</td><td class="num">${fmtQty(t.vol,3)}</td><td></td><td></td>
         </tr></tfoot>` : ''}
       </table>
@@ -2437,13 +2479,13 @@ function renderPoEditor(page){
     <div class="toolbar" style="margin-bottom:8px;"><h3 class="po-sec">Costing</h3><div class="spacer"></div><span class="muted" style="font-size:12px;">Selling prices are rounded up to ₹5. Type over one to set it by hand; clear the box to go back.</span></div>
     <div class="table-wrap po-table" style="margin-bottom:22px;">
       <table>
-        <thead><tr><th>#</th><th>Item</th><th class="num">Qty</th><th>HS code</th><th class="num">APTA %</th><th class="num">CIF (${escapeHtml(cur)})</th><th class="num">CIF (₹)</th><th class="num">BCD</th><th class="num">SWS</th>
-          <th class="num">IGST assessable</th><th class="num">IGST</th><th class="num">Landed basic cost</th><th class="num">Total cost (incl. GST)</th><th class="num">Unit cost</th>${c.markups.map(m=>`<th class="num">SP @ ${escapeHtml(m)}%</th>`).join('')}</tr></thead>
+        <thead><tr><th>#</th><th>Item</th><th class="num">Qty</th><th>HS code</th><th class="num">APTA / SAFTA %</th><th class="num">CIF (${escapeHtml(cur)})</th><th class="num">CIF (₹)</th><th class="num">BCD</th><th class="num">SWS</th>
+          <th class="num">IGST assessable</th><th class="num">IGST</th><th class="num">Landed basic cost</th><th class="num">Total cost (incl. GST)</th><th class="num">Unit cost (per unit)</th>${c.markups.map(m=>`<th class="num">SP @ ${escapeHtml(m)}% (per unit)</th>`).join('')}</tr></thead>
         <tbody>
         ${d.lines.map((l,i)=>{ const x = c.rows[i]; return `<tr>
           <td class="muted">${i+1}</td>
-          <td class="ref">${escapeHtml(l.item||'—')}${l.spec?`<div class="sub">${escapeHtml(l.spec)}</div>`:''}</td>
-          <td class="num">${fmtQty(l.qty)}</td>
+          <td class="ref">${escapeHtml(l.item||'—')}${specWithSheet(l)?`<div class="sub">${escapeHtml(specWithSheet(l))}</div>`:''}</td>
+          <td class="num">${fmtQty(l.qty)} ${escapeHtml(lineUnit(l))}</td>
           <td>${escapeHtml(l.hs||'—')}</td>
           <td class="num">${x.apta ? fmtQty(x.apta)+'%' : '—'}</td>
           <td class="num">${fmtFx(x.cifUsd)}</td>
@@ -2454,7 +2496,7 @@ function renderPoEditor(page){
           <td class="num">${fmtMoney(x.igst)}</td>
           <td class="num">${fmtMoney(x.landed)}</td>
           <td class="num">${fmtMoney(x.total)}</td>
-          <td class="num"><b>${fmtMoney2(x.unit)}</b></td>
+          <td class="num"><b>${fmtMoney2(x.unit)}</b> <span class="muted">/ ${escapeHtml(lineUnit(l))}</span>${l.altUnit ? `<div class="sub">${fmtMoney2(x.unit * toNum(l.sqmPerPc))} / pc</div>` : ''}</td>
           ${x.sp.map((v,k)=>`<td><input class="cell n sp" type="number" step="any" data-fk="l${i}-sp${k}" data-li="${i}" data-sp="${k}" value="${v}" title="${x.spSet[k]?'Set by hand: clear the box to use the markup price':'Markup price'}"></td>`).join('')}
         </tr>`; }).join('') || `<tr><td colspan="${14+c.markups.length}" class="empty">Add items to see the costing.</td></tr>`}
         </tbody>
@@ -2512,7 +2554,9 @@ function renderPoEditor(page){
         Object.assign(l, {item:p.name||'', spec:p.spec||'', nw:p.nw??'', gw:p.gw??'', vol:p.vol??'', hs:p.hs||''});
         if(isBlank(l.price) && !isBlank(p.lastPrice)) l.price = p.lastPrice;
       }
+      applySheet(l, p);
     }
+    else if(k==='cases' || k==='pcs'){ l[k] = el.value==='' ? '' : toNum(el.value); setSheetQty(l, k); }
     else if(['qty','price','nw','gw','vol'].includes(k)) l[k] = el.value==='' ? '' : toNum(el.value);
     else l[k] = el.value;
   })));
@@ -2647,8 +2691,8 @@ function printSupplierPo(d){
     <table class="items">
       <thead><tr><th>#</th><th>Item / description</th><th>HS code</th><th class="r">Qty</th><th class="r">Unit price<br>(${e(cur)})</th><th class="r">Amount<br>(${e(cur)}) ${e(d.deliveryTerms||'')}</th>
         <th class="r">NW/unit<br>(kg)</th><th class="r">GW/unit<br>(kg)</th><th class="r">Vol/unit<br>(m³)</th><th class="r">Total NW<br>(kg)</th><th class="r">Total GW<br>(kg)</th><th class="r">Total vol<br>(m³)</th></tr></thead>
-      <tbody>${d.lines.map((l,i)=>`<tr><td>${i+1}</td><td><b>${e(l.item||'')}</b>${l.spec?' — '+e(l.spec):''}</td><td>${e(l.hs||'')}</td>
-        <td class="r">${fmtQty(l.qty)}</td><td class="r">${fmtFx(l.price)}</td><td class="r">${fmtFx(c.rows[i].fob)}</td>
+      <tbody>${d.lines.map((l,i)=>`<tr><td>${i+1}</td><td><b>${e(l.item||'')}</b>${specWithSheet(l)?' — '+e(specWithSheet(l)):''}</td><td>${e(l.hs||'')}</td>
+        <td class="r">${fmtQty(l.qty)}${l.altUnit ? ' '+e(l.altUnit) : ''}</td><td class="r">${fmtFx(l.price)}</td><td class="r">${fmtFx(c.rows[i].fob)}</td>
         <td class="r">${fmtQty(l.nw)}</td><td class="r">${fmtQty(l.gw)}</td><td class="r">${fmtQty(l.vol,3)}</td>
         <td class="r">${fmtQty(toNum(l.nw)*toNum(l.qty))}</td><td class="r">${fmtQty(toNum(l.gw)*toNum(l.qty))}</td><td class="r">${fmtQty(toNum(l.vol)*toNum(l.qty),3)}</td></tr>`).join('')}
       <tr class="tot"><td colspan="3">TOTAL FOB</td><td class="r">${fmtQty(t.qty)}</td><td></td><td class="r">${e(cur)} ${fmtFx(t.fob)}</td><td></td><td></td><td></td>
@@ -2748,8 +2792,8 @@ async function exportSupplierPo(d){
   const fm = [XL_FMT.num, null, null, null, XL_FMT.num, XL_FMT.usd, XL_FMT.usd, XL_FMT.num, XL_FMT.num, XL_FMT.vol, XL_FMT.dec, XL_FMT.dec, XL_FMT.vol];
   d.lines.forEach((l,i)=>{
     const q = toNum(l.qty);
-    k.line(r++, [i+1, l.item||'', l.spec||'', l.hs||'', q, n(l.price), r2(c.rows[i].fob), n(l.nw), n(l.gw), n(l.vol), r2(toNum(l.nw)*q), r2(toNum(l.gw)*q), r2(toNum(l.vol)*q)],
-      fm, {fill:i%2 ? XL.zebra : null, bold:[1]});
+    k.line(r++, [i+1, l.item||'', specWithSheet(l), l.hs||'', q, n(l.price), r2(c.rows[i].fob), n(l.nw), n(l.gw), n(l.vol), r2(toNum(l.nw)*q), r2(toNum(l.gw)*q), r2(toNum(l.vol)*q)],
+      fm.map((f,j)=>j===4 ? xlQtyFmt(l) : f), {fill:i%2 ? XL.zebra : null, bold:[1]});
   });
   const tot = {fill:XL.total, font:{bold:true}};
   k.put(r, 1, 4, 'TOTAL FOB', {...tot, align:{horizontal:'right'}}); k.put(r, 5, 5, t.qty, {...tot, fmt:XL_FMT.num}); k.put(r, 6, 6, '', tot);
@@ -2876,7 +2920,7 @@ async function exportBillOfEntry(po){
   k.put(r, 1, N, `BILL OF ENTRY ${po.beNumber}  ·  DUTY WORKING  ·  ${po.poNumber}`, {fill:XL.navy, font:{bold:true, size:15, color:{argb:XL.white}}, align:{horizontal:'left', indent:1}}); ws.getRow(r++).height = 28;
   r++;
   const left = [['Bill of Entry no.', po.beNumber||''], ['Bill of Entry date', po.beDate ? fmtDate(po.beDate) : ''], ['PO number', po.poNumber], ['Vendor', poVendor(po).name||''], ['PO date', fmtDate(po.date)], ['Proforma invoice', po.piNumber||'']];
-  const right = [[`Exchange rate (₹ per ${cur})`, toNum(po.rate), XL_FMT.dec], [`CIF value (${cur})`, round2(t.cifUsd), XL_FMT.usd], ['CIF value (₹)', round2(t.cifInr), XL_FMT.inr2], ['APTA claimed', po.claimApta ? 'Yes' : 'No']];
+  const right = [[`Exchange rate (₹ per ${cur})`, toNum(po.rate), XL_FMT.dec], [`CIF value (${cur})`, round2(t.cifUsd), XL_FMT.usd], ['CIF value (₹)', round2(t.cifInr), XL_FMT.inr2], ['APTA / SAFTA claimed', po.claimApta ? 'Yes' : 'No']];
   left.forEach(([l, v], i)=>{
     k.label(r, 1, 2, l); k.put(r, 3, 4, v, i===0 ? {font:{bold:true}} : {});
     if(right[i]){ k.label(r, 6, 7, right[i][0]); k.put(r, 8, 9, right[i][1], {fmt:right[i][2]}); }
@@ -2887,8 +2931,8 @@ async function exportBillOfEntry(po){
   const fm = [XL_FMT.num, null, XL_FMT.num, null, XL_FMT.inr2, XL_FMT.inr2, XL_FMT.inr2, XL_FMT.inr2, XL_FMT.inr2];
   (po.lines||[]).forEach((l, i)=>{
     const x = c.rows[i];
-    k.line(r++, [i+1, productLabel({name:l.item, spec:l.spec}), toNum(l.qty), l.hs||'', round2(x.bcd), round2(x.sws), round2(x.assess), round2(x.igst), round2(x.assess + x.igst)],
-      fm, {fill:i%2 ? XL.zebra : null, bold:[8]});
+    k.line(r++, [i+1, productLabel({name:l.item, spec:specWithSheet(l)}), toNum(l.qty), l.hs||'', round2(x.bcd), round2(x.sws), round2(x.assess), round2(x.igst), round2(x.assess + x.igst)],
+      fm.map((f,j)=>j===2 ? xlQtyFmt(l) : f), {fill:i%2 ? XL.zebra : null, bold:[8]});
   });
   const tot = {fill:XL.total, font:{bold:true}};
   ['TOTAL', '', t.qty, '', round2(t.bcd), round2(t.sws), round2(t.assess), round2(t.igst)].forEach((v, i)=>k.put(r, i+1, i+1, v, {...tot, fmt:fm[i]}));
@@ -2910,8 +2954,7 @@ async function exportBillOfEntry(po){
 function ewayItems(po){
   const c = computePO(po), groups = new Map();
   (po.lines||[]).forEach((l, i)=>{
-    const p = state.products.find(x=>x.id===l.productId);
-    const unit = String((p && p.unit) || 'PCS').toUpperCase(), hs = String(l.hs||'');
+    const unit = lineUnit(l), hs = String(l.hs||'');
     const key = hs + '|' + unit;
     if(!groups.has(key)){
       const h = hsByCode(hs), rate = poRate(po, hs);
@@ -2998,8 +3041,8 @@ async function exportCustomsPo(d){
       const l = d.lines[i], x = c.rows[i], q = toNum(l.qty);
       k.put(r, 1, 1, r===r0 ? gi+1 : null, {align:{horizontal:'center'}});
       k.put(r, 2, 2, r===r0 ? g.item : null, {fill:'FFF3F6FA', font:{bold:true}});
-      k.put(r, 3, 3, l.spec||'');
-      k.put(r, 4, 4, q, {fmt:XL_FMT.num, align:{horizontal:'center'}});
+      k.put(r, 3, 3, specWithSheet(l));
+      k.put(r, 4, 4, q, {fmt:xlQtyFmt(l), align:{horizontal:'center'}});
       k.put(r, 5, 5, round2(q ? x.cifUsd/q : 0), {fmt:XL_FMT.usd});
       k.put(r, 6, 6, round2(x.cifUsd), {fmt:XL_FMT.usd});
       r++;
@@ -3045,7 +3088,7 @@ function printCustomsPo(d){
   const itemRows = groups.map((g, gi)=>g.rows.map((i, k)=>{
     const l = d.lines[i], x = c.rows[i], q = toNum(l.qty);
     return `<tr>${k===0 ? `<td class="c" rowspan="${g.rows.length}">${gi+1}</td><td class="item" rowspan="${g.rows.length}">${e(g.item)}</td>` : ''}
-      <td>${e(l.spec||'')}</td><td class="c">${fmtQty(q)}</td><td class="r">${fmtFx(q ? x.cifUsd/q : 0)}</td><td class="r">${fmtFx(x.cifUsd)}</td></tr>`;
+      <td>${e(specWithSheet(l))}</td><td class="c">${fmtQty(q)}${l.altUnit ? ' '+e(l.altUnit) : ''}</td><td class="r">${fmtFx(q ? x.cifUsd/q : 0)}</td><td class="r">${fmtFx(x.cifUsd)}</td></tr>`;
   }).join('')).join('');
   const contact = contactParts.map(e).join('&nbsp; | &nbsp;');
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${e(d.poNumber)} customs</title><style>
@@ -3108,7 +3151,7 @@ async function exportPoCosting(d){
   try{ ExcelJS = await loadExcelJs(); }catch(ex){ showToast(ex.message); return; }
   const c = computePO(d), t = c.totals, cur = d.currency || 'USD', r2 = round2;
   const head = ['#','Item','Description / spec','Qty',`Unit price (${cur})`,`Amount (${cur}) FOB`,'NW/unit (kg)','GW/unit (kg)','Vol/unit (m³)','Total NW (kg)','Total GW (kg)','Total vol (m³)',
-    `CIF (${cur})`,'CIF (₹)','HS code','APTA %','BCD','SWS','IGST assessable','IGST','Landed basic cost','Total cost (incl. GST)','Unit cost', ...c.markups.map(m=>`SP @ ${m}%`)];
+    `CIF (${cur})`,'CIF (₹)','HS code','APTA / SAFTA %','BCD','SWS','IGST assessable','IGST','Landed basic cost','Total cost (incl. GST)','Unit cost (per unit)', ...c.markups.map(m=>`SP @ ${m}% (per unit)`)];
   const N = head.length;
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('Costing', {pageSetup:{orientation:'landscape', paperSize:9, fitToPage:true, fitToWidth:1, fitToHeight:0}});
@@ -3118,7 +3161,7 @@ async function exportPoCosting(d){
   k.put(r, 1, N, `PURCHASE ORDER COSTING  ·  ${d.poNumber}`, {fill:XL.navy, font:{bold:true, size:16, color:{argb:XL.white}}, align:{horizontal:'left', indent:1}}); ws.getRow(r++).height = 30;
   r++;
   const order = [['PO number', d.poNumber], ['Vendor', poVendor(d).name||''], ['Date', fmtDate(d.date)], ['Status', (PO_STATUS[d.status]||PO_STATUS.draft).label]];
-  const imp = [[`Exchange rate (₹ per ${cur})`, toNum(d.rate), XL_FMT.dec], [`Freight (${cur})`, toNum(d.freight), XL_FMT.usd], [`Insurance (${cur})`, toNum(d.insurance), XL_FMT.usd], ['APTA claimed', d.claimApta ? 'Yes' : 'No']];
+  const imp = [[`Exchange rate (₹ per ${cur})`, toNum(d.rate), XL_FMT.dec], [`Freight (${cur})`, toNum(d.freight), XL_FMT.usd], [`Insurance (${cur})`, toNum(d.insurance), XL_FMT.usd], ['APTA / SAFTA claimed', d.claimApta ? 'Yes' : 'No']];
   const summary = [[`FOB (${cur})`, r2(t.fob), XL_FMT.usd], ['CIF (₹)', r2(t.cifInr), XL_FMT.inr], ['Customs duty (BCD + SWS)', r2(t.bcd + t.sws), XL_FMT.inr],
     ['IGST (input credit)', r2(t.igst), XL_FMT.inr], ['Total duty payable', r2(t.bcd + t.sws + t.igst), XL_FMT.inr], ['Other charges', r2(c.other), XL_FMT.inr],
     ['Landed basic cost', r2(t.landed), XL_FMT.inr], ['Total cost (incl. GST)', r2(t.total), XL_FMT.inr]];
@@ -3137,9 +3180,9 @@ async function exportPoCosting(d){
     XL_FMT.usd, XL_FMT.inr, null, XL_FMT.pct, XL_FMT.inr, XL_FMT.inr, XL_FMT.inr, XL_FMT.inr, XL_FMT.inr, XL_FMT.inr, XL_FMT.inr2, ...c.markups.map(()=>XL_FMT.inr)];
   d.lines.forEach((l,i)=>{
     const x = c.rows[i], q = toNum(l.qty);
-    k.line(r++, [i+1, l.item||'', l.spec||'', q, toNum(l.price), r2(x.fob), toNum(l.nw), toNum(l.gw), toNum(l.vol),
+    k.line(r++, [i+1, l.item||'', specWithSheet(l), q, toNum(l.price), r2(x.fob), toNum(l.nw), toNum(l.gw), toNum(l.vol),
       r2(toNum(l.nw)*q), r2(toNum(l.gw)*q), r2(toNum(l.vol)*q), r2(x.cifUsd), r2(x.cifInr), l.hs||'', x.apta, r2(x.bcd), r2(x.sws), r2(x.assess), r2(x.igst), r2(x.landed), r2(x.total), r2(x.unit), ...x.sp],
-      fm, {fill:i%2 ? XL.zebra : null, bold:[1, 20, 21, 22]});
+      fm.map((f,j)=>j===3 ? xlQtyFmt(l) : f), {fill:i%2 ? XL.zebra : null, bold:[1, 20, 21, 22]});
   });
   const totals = ['TOTAL','','',t.qty,'',r2(t.fob),'','','',r2(t.nw),r2(t.gw),r2(t.vol),r2(t.cifUsd),r2(t.cifInr),'','',r2(t.bcd),r2(t.sws),r2(t.assess),r2(t.igst),r2(t.landed),r2(t.total),'', ...c.markups.map(()=>'')];
   totals.forEach((v,i)=>k.put(r, i+1, i+1, v, {fill:XL.total, font:{bold:true}, fmt:fm[i]}));
@@ -3164,9 +3207,14 @@ const BULK_COLS = {
   vol:{head:'Volume per unit (m3)', num:true, match:n=>n.startsWith('vol')},
   hs:{head:'HS code', match:n=>n.startsWith('hs')},
   lastPrice:{head:'Last price (USD)', num:true, match:n=>n.startsWith('lastprice')},
+  altUnit:{head:'Alternate unit (SQM or blank)', match:n=>n.startsWith('altunit')||n.startsWith('alternateunit')},
+  width:{head:'Width (mm)', num:true, match:n=>n.startsWith('width')},
+  height:{head:'Height (mm)', num:true, match:n=>n.startsWith('height')},
+  pcsPerCase:{head:'Qty per case (pcs)', num:true, match:n=>n.includes('percase')},
+  cases:{head:'Cases (sheet products)', num:true, match:n=>n.startsWith('case')||n.startsWith('noofcase')},
 };
-const PRODUCT_UPLOAD = ['sku','name','spec','unit','hs','nw','gw','vol','lastPrice'];
-const PO_ITEM_UPLOAD = ['sku','name','spec','qty','price','nw','gw','vol','hs'];
+const PRODUCT_UPLOAD = ['sku','name','spec','unit','hs','nw','gw','vol','lastPrice','altUnit','width','height','pcsPerCase'];
+const PO_ITEM_UPLOAD = ['sku','name','spec','cases','qty','price','nw','gw','vol','hs'];
 /* Same item name + description (ignoring case, spaces and punctuation) = same product. */
 const productKey = (name, spec) => normHeader(name) + '|' + normHeader(spec);
 const newId = prefix => prefix + '_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
@@ -3311,7 +3359,8 @@ async function uploadProducts(file){
     const sku = normSku(o.sku), data = {};
     ['name','spec','hs'].forEach(k=>{ if(o[k]) data[k] = o[k]; });
     if(o.unit) data.unit = o.unit.toUpperCase();
-    ['nw','gw','vol','lastPrice'].forEach(k=>{ if(!isBlank(o[k])) data[k] = o[k]; });
+    if(o.altUnit) data.altUnit = o.altUnit.toUpperCase()==='SQM' ? 'SQM' : '';
+    ['nw','gw','vol','lastPrice','width','height','pcsPerCase'].forEach(k=>{ if(!isBlank(o[k])) data[k] = o[k]; });
     let p = sku ? bySku.get(sku) : null;
     if(!p){
       // same name + description: update it, taking the file's SKU if the product has none yet
@@ -3379,8 +3428,8 @@ async function uploadPoItems(file, page){
   const d = poOpen.draft;
   let rows = null;
   try{ rows = await readBulkFile(file, PO_ITEM_UPLOAD); }catch(ex){ console.error(ex); }
-  rows = (rows||[]).filter(o=>toNum(o.qty) > 0);
-  if(!rows.length){ showToast('No items found: the file needs "Item name" and "Qty" columns'); return; }
+  rows = (rows||[]).filter(o=>toNum(o.qty) > 0 || toNum(o.cases) > 0);
+  if(!rows.length){ showToast('No items found: the file needs "Item name" and "Qty" (or "Cases") columns'); return; }
   const bySku = new Map(state.products.filter(p=>p.sku).map(p=>[normSku(p.sku), p]));
   const byKey = new Map(state.products.map(p=>[productKey(p.name, p.spec), p]));
   const nextSku = skuSeries([...state.products, ...rows]);
@@ -3395,8 +3444,11 @@ async function uploadPoItems(file, page){
       byKey.set(productKey(p.name, p.spec), p);
     }
     const pick = (k, fallback) => isBlank(o[k]) ? (isBlank(fallback) ? '' : fallback) : o[k];
-    return {productId:p.id, item:p.name, spec:p.spec||'', qty:o.qty, price:pick('price', p.lastPrice),
+    const l = {productId:p.id, item:p.name, spec:p.spec||'', qty:o.qty, price:pick('price', p.lastPrice),
       nw:pick('nw', p.nw), gw:pick('gw', p.gw), vol:pick('vol', p.vol), hs:o.hs || p.hs || '', sp:[]};
+    // sheet products: Cases if given, else Qty is the number of pcs; the line's qty becomes SQM
+    if(sqmPerPc(p)){ l.cases = isBlank(o.cases) ? '' : o.cases; l.pcs = isBlank(o.cases) ? o.qty : ''; applySheet(l, p); }
+    return l;
   });
   const newProducts = [...created.values()];
   const apply = replace => async ()=>{
@@ -3434,15 +3486,23 @@ const MASTERS = {
       {k:'spec', label:'Description / spec', full:true},
       {k:'unit', label:'Unit (blank = PCS)'},
       {k:'hs', label:'HS code', type:'hs'},
-      {k:'nw', label:'Net weight per unit (kg)', type:'num'},
-      {k:'gw', label:'Gross weight per unit (kg)', type:'num'},
-      {k:'vol', label:'Volume per unit (m³)', type:'num'},
-      {k:'lastPrice', label:'Last price paid (USD)', type:'num'},
+      {k:'altUnit', label:'Alternate unit (PO qty and price)', type:'select', opts:[['','None'],['SQM','SQM (sheets: width × height)']]},
+      {k:'pcsPerCase', label:'Qty per case (pcs, optional)', type:'num'},
+      {k:'width', label:'Width (mm, optional)', type:'num'},
+      {k:'height', label:'Height (mm, optional)', type:'num'},
+      {k:'sqm', label:'SQM per pc (width × height)', type:'calc'},
+      {k:'nw', label:'Net weight per unit (kg; per SQM for sheets)', type:'num'},
+      {k:'gw', label:'Gross weight per unit (kg; per SQM for sheets)', type:'num'},
+      {k:'vol', label:'Volume per unit (m³; per SQM for sheets)', type:'num'},
+      {k:'lastPrice', label:'Last price paid (USD; per SQM for sheets)', type:'num'},
     ],
     cols:[
       {label:'SKU', cell:p=>p.sku ? `<b>${escapeHtml(p.sku)}</b>` : '<span class="muted">—</span>'},
       {label:'Item', cls:'ref', cell:p=>`${escapeHtml(p.name)}${p.spec?`<div class="sub">${escapeHtml(p.spec)}</div>`:''}`},
-      {label:'Unit', cell:p=>escapeHtml(p.unit||'PCS')},
+      {label:'Unit', cell:p=>escapeHtml(p.unit||'PCS') + (p.altUnit ? ` · ${escapeHtml(p.altUnit)}` : '')},
+      {label:'Size / case', cell:p=>[
+        toNum(p.width) && toNum(p.height) ? `${fmtQty(p.width,0)} × ${fmtQty(p.height,0)} mm` + (sqmPerPc(p) ? `<div class="sub">${fmtQty(sqmPerPc(p),4)} SQM/pc</div>` : '') : '',
+        toNum(p.pcsPerCase) ? `<div class="sub">${fmtQty(p.pcsPerCase,0)} pcs/case</div>` : ''].join('') || '—'},
       {label:'HS code', cell:p=>escapeHtml(p.hs||'—')},
       {label:'NW/unit (kg)', num:true, cell:p=>isBlank(p.nw)?'—':fmtQty(p.nw)},
       {label:'GW/unit (kg)', num:true, cell:p=>isBlank(p.gw)?'—':fmtQty(p.gw)},
@@ -3479,7 +3539,7 @@ const MASTERS = {
       {k:'code', label:'HS code', req:true},
       {k:'description', label:'Description'},
       {k:'bcd', label:'BCD %', type:'num', def:7.5},
-      {k:'apta', label:'APTA concession (% off BCD)', type:'num', def:0},
+      {k:'apta', label:'APTA / SAFTA concession (% off BCD)', type:'num'},
       {k:'sws', label:'SWS (% of BCD)', type:'num', def:10},
       {k:'igst', label:'IGST %', type:'num', def:18},
     ],
@@ -3487,10 +3547,10 @@ const MASTERS = {
       {label:'HS code', cls:'ref', cell:h=>escapeHtml(h.id)},
       {label:'Description', cell:h=>escapeHtml(h.description||'—')},
       {label:'BCD %', num:true, cell:h=>fmtQty(h.bcd)},
-      {label:'APTA %', num:true, cell:h=>toNum(h.apta)?fmtQty(h.apta):'—'},
+      {label:'APTA / SAFTA %', num:true, cell:h=>toNum(h.apta)?fmtQty(h.apta):'—'},
       {label:'SWS %', num:true, cell:h=>fmtQty(h.sws)},
       {label:'IGST %', num:true, cell:h=>fmtQty(h.igst)},
-      {label:'Duty on CIF', num:true, cell:h=>fmtQty(dutyPct(h,false),3)+'%'+(toNum(h.apta)?`<div class="hint">${fmtQty(dutyPct(h,true),3)}% with APTA</div>`:'')},
+      {label:'Duty on CIF', num:true, cell:h=>fmtQty(dutyPct(h,false),3)+'%'+(toNum(h.apta)?`<div class="hint">${fmtQty(dutyPct(h,true),3)}% with APTA / SAFTA</div>`:'')},
     ],
     search:h=>[h.id, h.description].join(' ')},
 };
@@ -3579,6 +3639,8 @@ function openMasterModal(kind, id){
   const input = f => {
     const v = val(f), name = `name="${f.k}" ${f.req?'required':''}`;
     if(f.type==='textarea') return `<textarea ${name} rows="3">${escapeHtml(v??'')}</textarea>`;
+    if(f.type==='select') return `<select ${name}>${f.opts.map(([o,label])=>`<option value="${escapeAttr(o)}" ${(v||'')===o?'selected':''}>${escapeHtml(label)}</option>`).join('')}</select>`;
+    if(f.type==='calc') return `<input name="${f.k}" disabled>`;
     if(f.type==='hs') return `<select ${name}><option value="">—</option>${state.hscodes.slice().sort(byText(h=>h.id)).map(h=>`<option value="${escapeAttr(h.id)}" ${v===h.id?'selected':''}>${escapeHtml(h.id)}${h.description?' · '+escapeHtml(h.description):''}</option>`).join('')}</select>`;
     return `<input ${name} ${f.type==='num'?'type="number" step="any"':''} value="${escapeAttr(v??'')}" ${f.k===def.idField && r ? 'disabled' : ''}>`;
   };
@@ -3601,18 +3663,29 @@ function openMasterModal(kind, id){
   const form = overlay.querySelector('#m-form');
   overlay.addEventListener('click', e=>{ if(e.target===overlay) overlay.remove(); });
   overlay.querySelector('#m-cancel').addEventListener('click', ()=>overlay.remove());
+  if(form.elements.sqm){
+    const showSqm = () => {
+      const g = k => form.elements[k].value;
+      const w = toNum(g('width')), h = toNum(g('height'));
+      form.elements.sqm.value = w && h ? fmtQty(w*h/1e6, 4) + (g('altUnit')==='SQM' ? '' : ' (choose SQM above to use it)') : '';
+    };
+    ['width','height','altUnit'].forEach(k=>form.elements[k].addEventListener('input', showSqm));
+    form.elements.altUnit.addEventListener('change', showSqm);
+    showSqm();
+  }
   form.addEventListener('submit', async e=>{
     e.preventDefault();
     const err = overlay.querySelector('#m-error');
     const data = {};
     def.fields.forEach(f=>{
-      if(f.k===def.idField) return;
+      if(f.k===def.idField || f.type==='calc') return;
       const raw = form.elements[f.k].value;
       data[f.k] = f.type==='num' ? (raw==='' ? null : toNum(raw)) : raw.trim();
     });
     if(kind==='products'){
       data.sku = normSku(data.sku) || (r && normSku(r.sku)) || skuSeries(state.products)();
       data.unit = (data.unit||'').toUpperCase();
+      if(data.altUnit==='SQM' && !sqmPerPc(data)){ err.textContent = 'Enter the width and height to use SQM.'; return; }
       if(state.products.some(x=>x.id!==id && normSku(x.sku)===data.sku)){ err.textContent = data.sku + ' is already used by another product.'; return; }
     }
     let docId = id;
