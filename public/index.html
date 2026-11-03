@@ -2213,7 +2213,8 @@ function lineUnit(l){
 }
 /* "1830 × 2440 mm · 50 cases · 1,000 pcs" for a sheet line, '' otherwise. */
 const sheetNote = l => !l.altUnit ? '' : [
-  toNum(l.width) && toNum(l.height) ? `${fmtQty(l.width,0)} × ${fmtQty(l.height,0)} mm` : '',
+  // the size, unless the description already gives it (e.g. "2100 X 2440 MM")
+  toNum(l.width) && toNum(l.height) && !(String(l.spec||'').includes(String(l.width)) && String(l.spec||'').includes(String(l.height))) ? `${fmtQty(l.width,0)} × ${fmtQty(l.height,0)} mm` : '',
   toNum(l.cases) ? `${fmtQty(l.cases,3)} case${toNum(l.cases)!==1?'s':''}` : '',
   `${fmtQty(l.pcs,0)} pcs`,
 ].filter(Boolean).join(' · ');
