@@ -1,0 +1,27 @@
+# Excel Traders — Sales & Incentive Ledger
+
+Single-file web app (`public/index.html`; plain HTML/JS, Chart.js + SheetJS from CDN, ExcelJS for the purchasing Excel exports), on Firebase:
+Firestore (modular SDK 12.4.0) + email/password Auth + Hosting. Firebase project `excel-ledger-eea70`, site https://excel-ledger-eea70.web.app.
+Hosting deploys from GitHub Actions on every push to `main` (`.github/workflows/`). Keep the repo private.
+Copied from the Alfa/Muzaf ledger (a separate app on a separate Firebase project); keep the UI as is (60-30-10 blue/slate/amber theme).
+
+## Data model (Firestore)
+One company: Excel Traders (`excel`), listed in `COMPANIES` in public/index.html (more can be added there and in `scripts/set-access.mjs`; the sign-in screen then offers a picker and the sidebar a switcher). Company data lives under `companies/{companyId}/` (orders, reps, channels, meta); the paths below are relative to that. A company entry may set `bizSplit:true` to split dashboard pies and the Incentives filter Glass vs Lifting (channel SR = Lifting); Excel Traders doesn't, so they go by channel.
+- `orders/{id}`: ref, channel, rep, ledgerMonth ('YYYY-MM'), gstRate, grossSales, totalCost (null if pending),
+  paymentStatus ('none'|'full'|'noteligible'), incentiveMonth ('YYYY-MM' or null; set when carried over),
+  incentiveLocked (bool), notes
+- `reps/{code}` {code,name}; `channels/{code}` {code,name}
+- `users/{uid}` (root, shared) {email,name,role:'admin'|'user',access:{companyId:[tab ids]},active}: access record; no tabs for a company = no access to it. Admins add users and set tabs in the Users tab; firestore.rules require an active users doc and gate writes by tab. Recovery/first admin: `cd scripts && npm install && node set-access.mjs ../serviceAccount.json <email> admin` (the service account key is never committed).
+- `meta/settings` {incentiveRate:5}; `meta/months` {list:[...]}; `meta/expenses` {salaries,rent,electricity,fuel,marketing,other}
+- Purchasing (Masters and Purchase Orders tabs): `vendors/{id}`, `products/{id}` {sku ('SKU-0001'…, unique; blank = next in series),name,spec,hs,nw,gw,vol,lastPrice,lastPo; editing name/spec/nw/gw/vol, in the form or by SKU in the bulk upload, copies them onto PO lines, never prices}, `hscodes/{code}` {code,description,bcd,apta,sws,igst}, `meta/purchasing` {buyer,markups,chargeHeads,terms}, `purchaseOrders/{id}` {poNumber,date,status:'draft'|'ordered'|'received',vendorId,vendor (copy),rate,freight,insurance,claimApta,charges:[{label,amount}],lines:[{productId,item,spec,qty,price,nw,gw,vol,hs,sp:[override|null]}],terms,rates (HS rates frozen at save; drafts use the live master)}. Landed-cost maths is the PURCHASING-CALC block in public/index.html; `node scripts/seed-purchasing.mjs serviceAccount.json <company> <workbook.xlsx> [--write]` imports a costing workbook and checks that block against the workbook's numbers.
+
+Firestore runs with a persistent on-device cache (IndexedDB, multi-tab); sign-out clears it. Reopening within ~30 min only bills changed docs; the free plan's 50k reads/day is the limit to watch (every fresh open reads all of a company's orders).
+
+## Business rules
+- Gross sales and total cost include GST. Gross profit = gross − cost. Net profit = gross profit / (1 + GST%/100). GST is 18% or 5% (blank in bulk upload = 0%).
+- Incentive = 5% of net profit, only for orders with status "Payment received"; counted in the order's incentive month (carry over moves it to next month; push back reverses).
+- Salesmen with code/name F and M are owners (`NON_INCENTIVE_REPS` in public/index.html): never eligible. New salesmen are eligible automatically.
+- A received order is locked (lock icon) to prevent double issuance; it must be unlocked before its status can change.
+- Financial year = Indian FY (1 Apr – 31 Mar).
+- True net profit = total net profit − (monthly expenses total × number of months that have orders).
+- Bulk upload template columns: Order Ref, Channel, Salesman, Month (YYYY-MM or 1-12), GST %, Gross Sales, Total Cost, Notes. Parse dates from raw Excel serials (no `cellDates`; IST timezone bug).
