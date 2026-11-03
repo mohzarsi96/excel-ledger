@@ -2784,7 +2784,13 @@ function renderPoEditor(page){
     </div>`;
 
   const edit = (fn, focusKey) => { fn(); poOpen.dirty = true; rerenderPo(page, focusKey); };
-  page.querySelectorAll('[data-h]').forEach(el=>el.addEventListener('change', ()=>edit(()=>{
+  // Date inputs fire 'change' after each typed part (day, month, year); redrawing then would put the cursor
+  // back on the first part, so they store as they go and redraw once the field loses focus.
+  page.querySelectorAll('[data-h][type="date"]').forEach(el=>{
+    el.addEventListener('change', ()=>{ d[el.dataset.h] = el.value; poOpen.dirty = true; });
+    el.addEventListener('blur', ()=>{ if(poOpen.dirty) rerenderPo(page); });
+  });
+  page.querySelectorAll('[data-h]:not([type="date"])').forEach(el=>el.addEventListener('change', ()=>edit(()=>{
     const k = el.dataset.h;
     if(el.type==='checkbox') d[k] = el.checked;
     else if(['rate','freight','insurance','beInterest'].includes(k)) d[k] = el.value==='' ? '' : toNum(el.value);
