@@ -389,7 +389,7 @@ thead th{background:var(--accent-soft);color:var(--accent-ink);}
 /* ============================================================
    DATA
    ============================================================ */
-const DEFAULT_REP_NAMES = {A:'Rep A', C:'Rep C', F:'Rep F', H:'Rep H', J:'Rep J', M:'Rep M'};
+const DEFAULT_REP_NAMES = {Y:'Yahya', M:'Murtaza', H:'Hussain'};
 const DEFAULT_CHANNEL_NAMES = {IM:'IM', A:'A', G:'G', C:'C'};
 
 let state = {
@@ -416,7 +416,7 @@ let charts = {};
 function round2(n){ return Math.round((n + Number.EPSILON) * 100) / 100; }
 
 /* Standing rule: these salesmen are owners and never earn incentive. */
-const NON_INCENTIVE_REPS = ['f','m'];
+const NON_INCENTIVE_REPS = ['y'];
 function isNonIncentiveRep(code){
   const c = String(code||'').trim().toLowerCase();
   const n = String((state.reps||{})[code]||'').trim().toLowerCase();
