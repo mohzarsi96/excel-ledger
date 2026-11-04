@@ -2421,7 +2421,10 @@ function computePO(po){
     const igst = r ? assess * toNum(r.igst)/100 : 0;
     return {fob, cifUsd, cifInr, apta, bcd, sws, assess, igst, gstPct: r ? toNum(r.igst) : 0, noRate:!r};
   });
-  const other = (po.charges||[]).reduce((t,c)=>t+toNum(c.amount),0);
+  // other charges are per container (× containers); interest on the Bill of Entry is counted once
+  const containers = Math.max(1, Math.round(toNum(po.containers)) || 1);
+  const perContainer = (po.charges||[]).reduce((t,c)=>t+(c.source==='beInterest' ? 0 : toNum(c.amount)),0);
+  const other = perContainer * containers + (po.charges||[]).reduce((t,c)=>t+(c.source==='beInterest' ? toNum(c.amount) : 0),0);
   const totAssess = rows.reduce((t,x)=>t+x.assess,0);
   rows.forEach((x,i)=>{
     const l = lines[i], qty = toNum(l.qty);
@@ -2433,7 +2436,7 @@ function computePO(po){
   });
   const sum = f => rows.reduce((t,x)=>t+f(x),0);
   const lsum = f => lines.reduce((t,l)=>t+f(l),0);
-  return {rows, markups, other, totals:{
+  return {rows, markups, other, containers, perContainer, totals:{
     qty:lsum(l=>toNum(l.qty)), fob:totFob,
     nw:lsum(l=>toNum(l.nw)*toNum(l.qty)), gw:lsum(l=>toNum(l.gw)*toNum(l.qty)), vol:lsum(lineVol),
     cifUsd:sum(x=>x.cifUsd), cifInr:sum(x=>x.cifInr), bcd:sum(x=>x.bcd), sws:sum(x=>x.sws),
@@ -2574,7 +2577,7 @@ function newPoDraft(){
     poNumber:`PO-${y}-${String(seq+1).padStart(3,'0')}`, date:todayISO(), status:'draft',
     vendorId:'', paymentTerms:'', currency:'USD', deliveryTerms:'FOB', port:'',
     rate:'', freight:0, insurance:0, claimApta:true,
-    charges:s.chargeHeads.map(label=>({label, amount:0})), lines:[], terms:s.terms,
+    containers:1, charges:s.chargeHeads.map(label=>({label, amount:0})), lines:[], terms:s.terms,
     beNumber:'', beDate:'', piNumber:'', piDate:'', priceBasis:s.priceBasis, shipment:s.shipment, packing:s.packing,
   };
 }
@@ -2770,6 +2773,8 @@ function renderPoEditor(page){
     <div class="chart-row" style="align-items:flex-start;">
       <div class="panel">
         <h3>Other charges (₹)</h3>
+        <div class="field" style="max-width:220px;"><label>Number of containers</label><input data-fk="h-containers" data-h="containers" type="number" min="1" step="1" value="${escapeAttr(c.containers)}"></div>
+        <div class="hint" style="margin:-4px 0 10px;">The charges below are per container and are multiplied by the number of containers (interest on the Bill of Entry is counted once).</div>
         <div class="settings-list">
           ${(d.charges||[]).map((ch,i)=>ch.source==='beInterest' ? `<div class="charge-row" title="Set by the Interest on Bill of Entry field in Customs above">
             <input value="${escapeAttr(ch.label||'')}" disabled>
@@ -2781,7 +2786,8 @@ function renderPoEditor(page){
             <button class="icon-btn po-del-charge" data-ci="${i}" title="Remove charge">✕</button>
           </div>`).join('')}
         </div>
-        <div class="exp-total"><span>Total</span><span class="num">${fmtMoney(c.other)}</span></div>
+        ${c.containers > 1 ? `<div class="exp-total" style="font-weight:500;"><span>Per container</span><span class="num">${fmtMoney(c.perContainer)}</span></div>` : ''}
+        <div class="exp-total"><span>Total${c.containers > 1 ? ` (${c.containers} containers)` : ''}</span><span class="num">${fmtMoney(c.other)}</span></div>
         <button class="btn btn-sm" id="po-add-charge" style="margin-top:10px;">+ Add charge</button>
         <div class="hint">Shared across the items in proportion to their IGST assessable value.</div>
       </div>
@@ -2802,6 +2808,7 @@ function renderPoEditor(page){
   page.querySelectorAll('[data-h]:not([type="date"])').forEach(el=>el.addEventListener('change', ()=>edit(()=>{
     const k = el.dataset.h;
     if(el.type==='checkbox') d[k] = el.checked;
+    else if(k==='containers') d.containers = Math.max(1, Math.round(toNum(el.value)) || 1);
     else if(['rate','freight','insurance','beInterest'].includes(k)) d[k] = el.value==='' ? '' : toNum(el.value);
     else d[k] = el.value;
     if(k==='beInterest') d.charges = withBeInterest(d.charges, d.beInterest);
@@ -3598,8 +3605,9 @@ async function exportPoCosting(d){
   const totals = ['TOTAL','','',t.qty,'',r2(t.fob),'','','',r2(t.nw),r2(t.gw),r2(t.vol),r2(t.cifUsd),r2(t.cifInr),'','',r2(t.bcd),r2(t.sws),r2(t.assess),r2(t.igst),r2(t.landed),r2(t.total),'', ...c.markups.map(()=>'')];
   totals.forEach((v,i)=>k.put(r, i+1, i+1, v, {fill:XL.total, font:{bold:true}, fmt:fm[i]}));
   r += 2;
-  k.band(r++, 2, 3, 'OTHER CHARGES (₹)');
-  (d.charges||[]).forEach(ch=>{ k.label(r, 2, 2, ch.label||''); k.put(r++, 3, 3, toNum(ch.amount), {fmt:XL_FMT.inr}); });
+  k.band(r++, 2, 3, c.containers > 1 ? `OTHER CHARGES (₹, per container)` : 'OTHER CHARGES (₹)');
+  (d.charges||[]).forEach(ch=>{ k.label(r, 2, 2, (ch.label||'') + (c.containers > 1 && ch.source==='beInterest' ? ' (once)' : '')); k.put(r++, 3, 3, toNum(ch.amount), {fmt:XL_FMT.inr}); });
+  if(c.containers > 1){ k.label(r, 2, 2, 'Number of containers'); k.put(r++, 3, 3, c.containers, {fmt:XL_FMT.num}); }
   k.put(r, 2, 2, 'Total', {fill:XL.amber, font:{bold:true}}); k.put(r, 3, 3, r2(c.other), {fill:XL.amber, font:{bold:true}, fmt:XL_FMT.inr});
   ws.views = [{state:'frozen', xSplit:3, ySplit:headRow, showGridLines:false}];
   await saveWorkbook(wb, (d.poNumber||'PO').replace(/[^\w.-]+/g,'-') + '-costing.xlsx');
