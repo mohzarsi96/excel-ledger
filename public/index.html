@@ -2446,17 +2446,17 @@ function computePO(po){
 }
 // PURCHASING-CALC-END
 /* The price columns at the end of the PO costing: markup selling prices, or for costing:'gst' companies cost incl. GST
-   (unit cost + the item's GST %), which sheet (SQM) lines also give per sq ft (÷ 10.764) and per sq ft per mm of thickness. */
+   (unit cost + the item's GST %), which sheet (SQM) lines also give per sq ft (÷ 10.764) and per mm (per SQM ÷ thickness). */
 const SQFT_PER_SQM = 10.764;
 const costIncGstMode = () => company().costing==='gst';
 const priceHeads = c => costIncGstMode()
-  ? ['Cost incl. GST (per SQM / unit)', 'Cost incl. GST per sq ft', 'Cost incl. GST per sq ft per mm']
+  ? ['Cost incl. GST (per SQM / unit)', 'Cost incl. GST per sq ft', 'Cost incl. GST per mm (per SQM ÷ thickness)']
   : c.markups.map(m=>`SP @ ${m}% (per unit)`);
 function costIncGst(l, x){
   const inc = x.unit * (1 + x.gstPct/100);
   if(!l.altUnit) return [inc, null, null];
   const p = state.products.find(p=>p.id===l.productId), mm = toNum(p && p.thickness), sqft = inc / SQFT_PER_SQM;
-  return [inc, sqft, mm ? sqft / mm : null];
+  return [inc, sqft, mm ? inc / mm : null];
 }
 
 const PO_STATUS = {draft:{label:'Draft', pill:'pill-pending'}, ordered:{label:'Ordered', pill:'pill-partial'}, received:{label:'Received', pill:'pill-paid'}};
@@ -2752,7 +2752,7 @@ function renderPoEditor(page){
     </div>
     ${d.lines.length ? '<div style="margin:-12px 0 22px;"><button class="btn btn-sm po-add-line">+ Add item</button></div>' : ''}
 
-    <div class="toolbar" style="margin-bottom:8px;"><h3 class="po-sec">Costing</h3><div class="spacer"></div><span class="muted" style="font-size:12px;">${costIncGstMode() ? 'Cost incl. GST = unit cost + the item\'s GST %. Per sq ft = per SQM ÷ 10.764; per mm uses the thickness in Masters.' : 'Selling prices are rounded up to ₹5. Type over one to set it by hand; clear the box to go back.'}</span></div>
+    <div class="toolbar" style="margin-bottom:8px;"><h3 class="po-sec">Costing</h3><div class="spacer"></div><span class="muted" style="font-size:12px;">${costIncGstMode() ? 'Cost incl. GST = unit cost + the item\'s GST %. Per sq ft = per SQM ÷ 10.764; per mm = per SQM ÷ the thickness in Masters.' : 'Selling prices are rounded up to ₹5. Type over one to set it by hand; clear the box to go back.'}</span></div>
     <div class="table-wrap po-table" style="margin-bottom:22px;">
       <table>
         <thead><tr><th>#</th><th>Item</th><th class="num">Qty</th><th>HS code</th><th class="num">APTA / SAFTA %</th><th class="num">CIF (${escapeHtml(cur)})</th><th class="num">CIF (₹)</th><th class="num">BCD</th><th class="num">SWS</th>
