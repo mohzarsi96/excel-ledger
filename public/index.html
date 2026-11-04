@@ -2401,6 +2401,8 @@ function ratesFor(po){
   });
   return out;
 }
+/* Total volume of a PO line: sheet lines (altUnit) give volume per pc, so it is multiplied by pcs, not by the SQM qty. */
+const lineVol = l => toNum(l.vol) * (l.altUnit ? toNum(l.pcs) : toNum(l.qty));
 function computePO(po){
   const lines = po.lines || [];
   const markups = poSettings().markups;
@@ -2433,7 +2435,7 @@ function computePO(po){
   const lsum = f => lines.reduce((t,l)=>t+f(l),0);
   return {rows, markups, other, totals:{
     qty:lsum(l=>toNum(l.qty)), fob:totFob,
-    nw:lsum(l=>toNum(l.nw)*toNum(l.qty)), gw:lsum(l=>toNum(l.gw)*toNum(l.qty)), vol:lsum(l=>toNum(l.vol)*toNum(l.qty)),
+    nw:lsum(l=>toNum(l.nw)*toNum(l.qty)), gw:lsum(l=>toNum(l.gw)*toNum(l.qty)), vol:lsum(lineVol),
     cifUsd:sum(x=>x.cifUsd), cifInr:sum(x=>x.cifInr), bcd:sum(x=>x.bcd), sws:sum(x=>x.sws),
     assess:totAssess, igst:sum(x=>x.igst), landed:sum(x=>x.landed), total:sum(x=>x.total),
   }};
@@ -2702,7 +2704,7 @@ function renderPoEditor(page){
     <div class="table-wrap po-table" style="margin-bottom:22px;">
       <table>
         <thead><tr><th>#</th><th>Product &amp; description</th><th class="num">Cases</th><th class="num">Pcs</th><th class="num">Qty</th><th>Unit</th><th class="num">Price / unit (${escapeHtml(cur)})</th><th class="num">Amount (${escapeHtml(cur)})</th>
-          <th class="num">NW/unit (kg)</th><th class="num">GW/unit (kg)</th><th class="num">Vol/unit (m³)</th><th class="num">Total NW</th><th class="num">Total GW</th><th class="num">Total vol</th><th>HS code</th><th></th></tr></thead>
+          <th class="num">NW/unit (kg)</th><th class="num">GW/unit (kg)</th><th class="num">Vol/unit (m³; per pc for sheets)</th><th class="num">Total NW</th><th class="num">Total GW</th><th class="num">Total vol</th><th>HS code</th><th></th></tr></thead>
         <tbody>
         ${d.lines.map((l,i)=>`<tr>
           <td class="muted">${i+1}</td>
@@ -2718,7 +2720,7 @@ function renderPoEditor(page){
           <td>${numIn(i,'vol',l)}</td>
           <td class="num">${fmtQty(toNum(l.nw)*toNum(l.qty))}</td>
           <td class="num">${fmtQty(toNum(l.gw)*toNum(l.qty))}</td>
-          <td class="num">${fmtQty(toNum(l.vol)*toNum(l.qty),3)}</td>
+          <td class="num">${fmtQty(lineVol(l),3)}</td>
           <td><select class="cell" ${lineIn(i,'hs')}>${hsOpts(l.hs)}</select></td>
           <td><button class="icon-btn po-del-line" data-li="${i}" title="Remove item">✕</button></td>
         </tr>`).join('') || `<tr><td colspan="16" class="empty">No items yet. Use "+ Add item" or "Upload items".</td></tr>`}
@@ -2959,11 +2961,11 @@ function printSupplierPo(d){
     </div>
     <table class="items">
       <thead><tr><th>#</th><th>Item / description</th><th>HS code</th><th class="r">Qty</th><th class="r">Unit price<br>(${e(cur)})</th><th class="r">Amount<br>(${e(cur)}) ${e(d.deliveryTerms||'')}</th>
-        <th class="r">NW/unit<br>(kg)</th><th class="r">GW/unit<br>(kg)</th><th class="r">Vol/unit<br>(m³)</th><th class="r">Total NW<br>(kg)</th><th class="r">Total GW<br>(kg)</th><th class="r">Total vol<br>(m³)</th></tr></thead>
+        <th class="r">NW/unit<br>(kg)</th><th class="r">GW/unit<br>(kg)</th><th class="r">Vol/unit<br>(m³)<br>per pc for sheets</th><th class="r">Total NW<br>(kg)</th><th class="r">Total GW<br>(kg)</th><th class="r">Total vol<br>(m³)</th></tr></thead>
       <tbody>${d.lines.map((l,i)=>`<tr><td>${i+1}</td><td><b>${e(l.item||'')}</b>${specWithSheet(l)?' — '+e(specWithSheet(l)):''}</td><td>${e(l.hs||'')}</td>
         <td class="r">${fmtQty(l.qty)}${l.altUnit ? ' '+e(l.altUnit) : ''}</td><td class="r">${fmtPrice(l.price)}</td><td class="r">${fmtFx(c.rows[i].fob)}</td>
         <td class="r">${fmtQty(l.nw)}</td><td class="r">${fmtQty(l.gw)}</td><td class="r">${fmtQty(l.vol,3)}</td>
-        <td class="r">${fmtQty(toNum(l.nw)*toNum(l.qty))}</td><td class="r">${fmtQty(toNum(l.gw)*toNum(l.qty))}</td><td class="r">${fmtQty(toNum(l.vol)*toNum(l.qty),3)}</td></tr>`).join('')}
+        <td class="r">${fmtQty(toNum(l.nw)*toNum(l.qty))}</td><td class="r">${fmtQty(toNum(l.gw)*toNum(l.qty))}</td><td class="r">${fmtQty(lineVol(l),3)}</td></tr>`).join('')}
       <tr class="tot"><td colspan="3">TOTAL FOB</td><td class="r">${fmtQty(t.qty)}</td><td></td><td class="r">${e(cur)} ${fmtFx(t.fob)}</td><td></td><td></td><td></td>
         <td class="r">${fmtQty(t.nw)}</td><td class="r">${fmtQty(t.gw)}</td><td class="r">${fmtQty(t.vol,3)}</td></tr>
       <tr class="sum"><td colspan="5">Freight + insurance</td><td class="r">${e(cur)} ${fmtFx(toNum(d.freight) + toNum(d.insurance))}</td><td colspan="6"></td></tr>
@@ -3057,11 +3059,11 @@ async function exportSupplierPo(d){
   }
   r++;
   k.header(r++, ['#','Item','Description / spec','HS code','Qty',`Unit price (${cur})`,`Amount (${cur}) ${d.deliveryTerms||''}`.trim(),
-    'NW/unit (kg)','GW/unit (kg)','Vol/unit (m³)','Total NW (kg)','Total GW (kg)','Total vol (m³)']);
+    'NW/unit (kg)','GW/unit (kg)','Vol/unit (m³; per pc for sheets)','Total NW (kg)','Total GW (kg)','Total vol (m³)']);
   const fm = [XL_FMT.num, null, null, null, XL_FMT.num, XL_FMT.price, XL_FMT.usd, XL_FMT.num, XL_FMT.num, XL_FMT.vol, XL_FMT.dec, XL_FMT.dec, XL_FMT.vol];
   d.lines.forEach((l,i)=>{
     const q = toNum(l.qty);
-    k.line(r++, [i+1, l.item||'', specWithSheet(l), l.hs||'', q, isBlank(l.price) ? '' : round3(l.price), r2(c.rows[i].fob), n(l.nw), n(l.gw), n(l.vol), r2(toNum(l.nw)*q), r2(toNum(l.gw)*q), r2(toNum(l.vol)*q)],
+    k.line(r++, [i+1, l.item||'', specWithSheet(l), l.hs||'', q, isBlank(l.price) ? '' : round3(l.price), r2(c.rows[i].fob), n(l.nw), n(l.gw), n(l.vol), r2(toNum(l.nw)*q), r2(toNum(l.gw)*q), round3(lineVol(l))],
       fm.map((f,j)=>j===4 ? xlQtyFmt(l) : f), {fill:i%2 ? XL.zebra : null, bold:[1]});
   });
   const tot = {fill:XL.total, font:{bold:true}};
@@ -3559,7 +3561,7 @@ async function exportPoCosting(d){
   let ExcelJS;
   try{ ExcelJS = await loadExcelJs(); }catch(ex){ showToast(ex.message); return; }
   const c = computePO(d), t = c.totals, cur = d.currency || 'USD', r2 = round2;
-  const head = ['#','Item','Description / spec','Qty',`Unit price (${cur})`,`Amount (${cur}) FOB`,'NW/unit (kg)','GW/unit (kg)','Vol/unit (m³)','Total NW (kg)','Total GW (kg)','Total vol (m³)',
+  const head = ['#','Item','Description / spec','Qty',`Unit price (${cur})`,`Amount (${cur}) FOB`,'NW/unit (kg)','GW/unit (kg)','Vol/unit (m³; per pc for sheets)','Total NW (kg)','Total GW (kg)','Total vol (m³)',
     `CIF (${cur})`,'CIF (₹)','HS code','APTA / SAFTA %','BCD','SWS','IGST assessable','IGST','Landed basic cost','Total cost (incl. GST)','Unit cost (per unit)', ...c.markups.map(m=>`SP @ ${m}% (per unit)`)];
   const N = head.length;
   const wb = new ExcelJS.Workbook();
@@ -3590,7 +3592,7 @@ async function exportPoCosting(d){
   d.lines.forEach((l,i)=>{
     const x = c.rows[i], q = toNum(l.qty);
     k.line(r++, [i+1, l.item||'', specWithSheet(l), q, round3(l.price), r2(x.fob), toNum(l.nw), toNum(l.gw), toNum(l.vol),
-      r2(toNum(l.nw)*q), r2(toNum(l.gw)*q), r2(toNum(l.vol)*q), r2(x.cifUsd), r2(x.cifInr), l.hs||'', x.apta, r2(x.bcd), r2(x.sws), r2(x.assess), r2(x.igst), r2(x.landed), r2(x.total), r2(x.unit), ...x.sp],
+      r2(toNum(l.nw)*q), r2(toNum(l.gw)*q), round3(lineVol(l)), r2(x.cifUsd), r2(x.cifInr), l.hs||'', x.apta, r2(x.bcd), r2(x.sws), r2(x.assess), r2(x.igst), r2(x.landed), r2(x.total), r2(x.unit), ...x.sp],
       fm.map((f,j)=>j===3 ? xlQtyFmt(l) : f), {fill:i%2 ? XL.zebra : null, bold:[1, 20, 21, 22]});
   });
   const totals = ['TOTAL','','',t.qty,'',r2(t.fob),'','','',r2(t.nw),r2(t.gw),r2(t.vol),r2(t.cifUsd),r2(t.cifInr),'','',r2(t.bcd),r2(t.sws),r2(t.assess),r2(t.igst),r2(t.landed),r2(t.total),'', ...c.markups.map(()=>'')];
@@ -3905,7 +3907,7 @@ const MASTERS = {
       {k:'sqm', label:'SQM per pc (width × height)', type:'calc'},
       {k:'nw', label:'Net weight per unit (kg; per SQM for sheets)', type:'num'},
       {k:'gw', label:'Gross weight per unit (kg; per SQM for sheets)', type:'num'},
-      {k:'vol', label:'Volume per unit (m³; per SQM for sheets)', type:'num'},
+      {k:'vol', label:'Volume per unit (m³; per pc for sheets)', type:'num'},
       {k:'lastPrice', label:'Last price paid (USD; per SQM for sheets)', type:'num'},
     ],
     cols:[
