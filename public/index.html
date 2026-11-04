@@ -2663,7 +2663,7 @@ function renderPoEditor(page){
       <div class="po-grid">
         ${field('poNumber','PO number')}
         ${field('date','Date','date')}
-        <div class="field"><label>Status</label><select data-fk="h-status" data-h="status">${Object.entries(PO_STATUS).map(([k,s])=>`<option value="${k}" ${d.status===k?'selected':''}>${s.label}</option>`).join('')}</select></div>
+        <div class="field"><label>Status</label><select data-fk="h-status" data-h="status">${Object.entries(PO_STATUS).map(([k,s])=>`<option value="${k}" ${d.status===k?'selected':''}>${s.label}</option>`).join('')}</select>${d.status!=='draft' ? '<div class="hint" style="margin:4px 0 0;">Saving updates each product\'s last price in Masters.</div>' : ''}</div>
         <div class="field"><label>Vendor</label><select data-fk="h-vendorId" data-h="vendorId"><option value="">Choose vendor…</option>${state.vendors.slice().sort(byText(v=>v.name)).map(v=>`<option value="${escapeAttr(v.id)}" ${d.vendorId===v.id?'selected':''}>${escapeHtml(v.name)}</option>`).join('')}</select></div>
         ${field('paymentTerms','Payment terms','text','span2')}
         ${field('deliveryTerms','Delivery terms')}
@@ -2898,18 +2898,22 @@ async function savePo(page){
     return;
   }
   poOpen = {id, draft:JSON.parse(JSON.stringify(body)), dirty:false};
-  // Ordered and received POs set each product's last price.
+  // Ordered and received POs set each product's last price in Masters (a product on several lines takes the last one).
+  let priced = 0, failed = 0;
   if(d.status!=='draft'){
-    for(const l of d.lines){
-      const p = state.products.find(x=>x.id===l.productId);
-      if(p && !isBlank(l.price) && (toNum(p.lastPrice)!==toNum(l.price) || p.lastPo!==d.poNumber)){
-        try{ await fb.updateDoc(docRef('products/'+p.id), {lastPrice:toNum(l.price), lastPo:d.poNumber}); }
-        catch(ex){ console.error('last price update failed', ex); }
-      }
+    const prices = new Map();
+    d.lines.forEach(l=>{ if(l.productId && !isBlank(l.price)) prices.set(l.productId, round3(l.price)); });
+    for(const [pid, price] of prices){
+      const p = state.products.find(x=>x.id===pid);
+      if(!p || (toNum(p.lastPrice)===price && p.lastPo===d.poNumber)) continue;
+      try{ await fb.updateDoc(docRef('products/'+p.id), {lastPrice:price, lastPo:d.poNumber}); priced++; }
+      catch(ex){ console.error('last price update failed', ex); failed++; }
     }
   }
   renderPoEditor(page);
-  showToast(d.poNumber + ' saved');
+  showToast(d.poNumber + ' saved'
+    + (priced ? ` · last price updated on ${priced} product${priced!==1?'s':''} in Masters` : '')
+    + (failed ? ` · ${failed} product price${failed!==1?'s':''} could not be updated in Masters` : ''));
 }
 
 /* Beneficiary bank lines for the supplier PO; empty when the vendor has no bank details. */
