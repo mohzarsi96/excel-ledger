@@ -521,8 +521,9 @@ const STATUS_LABELS = {full:'Payment received', partial:'Pending', none:'Pending
    bizSplit: dashboard pies and the Incentives filter split Glass vs Lifting; without it they split by channel.
    incentive:'netSales': incentive on monthly net sales above a threshold (applySalesIncentive) instead of
    a % of each order's net profit. */
+/* costing:'gst' = the PO costing shows cost incl. GST (per SQM, per sq ft, per sq ft per mm) instead of markup selling prices. */
 const COMPANIES = [
-  {id:'excel', name:'Excel', suffix:'Traders', incentive:'netSales'},
+  {id:'excel', name:'Excel', suffix:'Traders', incentive:'netSales', costing:'gst'},
 ];
 const LAST_COMPANY_KEY = 'ledger.company';
 function readLastCompany(){
@@ -2444,6 +2445,19 @@ function computePO(po){
   }};
 }
 // PURCHASING-CALC-END
+/* The price columns at the end of the PO costing: markup selling prices, or for costing:'gst' companies cost incl. GST
+   (unit cost + the item's GST %), which sheet (SQM) lines also give per sq ft (÷ 10.764) and per sq ft per mm of thickness. */
+const SQFT_PER_SQM = 10.764;
+const costIncGstMode = () => company().costing==='gst';
+const priceHeads = c => costIncGstMode()
+  ? ['Cost incl. GST (per SQM / unit)', 'Cost incl. GST per sq ft', 'Cost incl. GST per sq ft per mm']
+  : c.markups.map(m=>`SP @ ${m}% (per unit)`);
+function costIncGst(l, x){
+  const inc = x.unit * (1 + x.gstPct/100);
+  if(!l.altUnit) return [inc, null, null];
+  const p = state.products.find(p=>p.id===l.productId), mm = toNum(p && p.thickness), sqft = inc / SQFT_PER_SQM;
+  return [inc, sqft, mm ? sqft / mm : null];
+}
 
 const PO_STATUS = {draft:{label:'Draft', pill:'pill-pending'}, ordered:{label:'Ordered', pill:'pill-partial'}, received:{label:'Received', pill:'pill-paid'}};
 const fmtFx = n => (toNum(n)<0?'−':'') + Math.abs(toNum(n)).toLocaleString('en-US',{minimumFractionDigits:2, maximumFractionDigits:2});
@@ -2738,11 +2752,11 @@ function renderPoEditor(page){
     </div>
     ${d.lines.length ? '<div style="margin:-12px 0 22px;"><button class="btn btn-sm po-add-line">+ Add item</button></div>' : ''}
 
-    <div class="toolbar" style="margin-bottom:8px;"><h3 class="po-sec">Costing</h3><div class="spacer"></div><span class="muted" style="font-size:12px;">Selling prices are rounded up to ₹5. Type over one to set it by hand; clear the box to go back.</span></div>
+    <div class="toolbar" style="margin-bottom:8px;"><h3 class="po-sec">Costing</h3><div class="spacer"></div><span class="muted" style="font-size:12px;">${costIncGstMode() ? 'Cost incl. GST = unit cost + the item\'s GST %. Per sq ft = per SQM ÷ 10.764; per mm uses the thickness in Masters.' : 'Selling prices are rounded up to ₹5. Type over one to set it by hand; clear the box to go back.'}</span></div>
     <div class="table-wrap po-table" style="margin-bottom:22px;">
       <table>
         <thead><tr><th>#</th><th>Item</th><th class="num">Qty</th><th>HS code</th><th class="num">APTA / SAFTA %</th><th class="num">CIF (${escapeHtml(cur)})</th><th class="num">CIF (₹)</th><th class="num">BCD</th><th class="num">SWS</th>
-          <th class="num">IGST assessable</th><th class="num">IGST</th><th class="num">Landed basic cost</th><th class="num">Total cost (incl. GST)</th><th class="num">Unit cost (per unit)</th>${c.markups.map(m=>`<th class="num">SP @ ${escapeHtml(m)}% (per unit)</th>`).join('')}</tr></thead>
+          <th class="num">IGST assessable</th><th class="num">IGST</th><th class="num">Landed basic cost</th><th class="num">Total cost (incl. GST)</th><th class="num">Unit cost (per unit)</th>${priceHeads(c).map(h=>`<th class="num">${escapeHtml(h)}</th>`).join('')}</tr></thead>
         <tbody>
         ${d.lines.map((l,i)=>{ const x = c.rows[i]; return `<tr>
           <td class="muted">${i+1}</td>
@@ -2759,13 +2773,13 @@ function renderPoEditor(page){
           <td class="num">${fmtMoney(x.landed)}</td>
           <td class="num">${fmtMoney(x.total)}</td>
           <td class="num"><b>${fmtMoney2(x.unit)}</b> <span class="muted">/ ${escapeHtml(lineUnit(l))}</span>${l.altUnit ? `<div class="sub">${fmtMoney2(x.unit * toNum(l.sqmPerPc))} / pc</div>` : ''}</td>
-          ${x.sp.map((v,k)=>`<td><input class="cell n sp" type="number" step="any" data-fk="l${i}-sp${k}" data-li="${i}" data-sp="${k}" value="${v}" title="${x.spSet[k]?'Set by hand: clear the box to use the markup price':'Markup price'}"></td>`).join('')}
-        </tr>`; }).join('') || `<tr><td colspan="${14+c.markups.length}" class="empty">Add items to see the costing.</td></tr>`}
+          ${costIncGstMode() ? costIncGst(l, x).map((v,k)=>`<td class="num">${v===null ? (k===2 && l.altUnit ? '<span class="muted" title="No thickness in Masters">—</span>' : '<span class="muted">—</span>') : `${k===0 ? '<b>' : ''}${fmtMoney2(v)}${k===0 ? '</b>' : ''}${k===0 ? ` <span class="muted">/ ${escapeHtml(lineUnit(l))}</span>` : ''}`}</td>`).join('') : x.sp.map((v,k)=>`<td><input class="cell n sp" type="number" step="any" data-fk="l${i}-sp${k}" data-li="${i}" data-sp="${k}" value="${v}" title="${x.spSet[k]?'Set by hand: clear the box to use the markup price':'Markup price'}"></td>`).join('')}
+        </tr>`; }).join('') || `<tr><td colspan="${14+priceHeads(c).length}" class="empty">Add items to see the costing.</td></tr>`}
         </tbody>
         ${d.lines.length ? `<tfoot><tr class="tot-row">
           <td colspan="2">Total</td><td class="num">${fmtQty(t.qty)}</td><td></td><td></td>
           <td class="num">${fmtFx(t.cifUsd)}</td><td class="num">${fmtMoney(t.cifInr)}</td><td class="num">${fmtMoney(t.bcd)}</td><td class="num">${fmtMoney(t.sws)}</td>
-          <td class="num">${fmtMoney(t.assess)}</td><td class="num">${fmtMoney(t.igst)}</td><td class="num">${fmtMoney(t.landed)}</td><td class="num">${fmtMoney(t.total)}</td><td></td>${c.markups.map(()=>'<td></td>').join('')}
+          <td class="num">${fmtMoney(t.assess)}</td><td class="num">${fmtMoney(t.igst)}</td><td class="num">${fmtMoney(t.landed)}</td><td class="num">${fmtMoney(t.total)}</td><td></td>${priceHeads(c).map(()=>'<td></td>').join('')}
         </tr></tfoot>` : ''}
       </table>
     </div>
@@ -3573,7 +3587,7 @@ async function exportPoCosting(d){
   try{ ExcelJS = await loadExcelJs(); }catch(ex){ showToast(ex.message); return; }
   const c = computePO(d), t = c.totals, cur = d.currency || 'USD', r2 = round2;
   const head = ['#','Item','Description / spec','Qty',`Unit price (${cur})`,`Amount (${cur}) FOB`,'NW/unit (kg)','GW/unit (kg)','Vol/unit (m³; per pc for sheets)','Total NW (kg)','Total GW (kg)','Total vol (m³)',
-    `CIF (${cur})`,'CIF (₹)','HS code','APTA / SAFTA %','BCD','SWS','IGST assessable','IGST','Landed basic cost','Total cost (incl. GST)','Unit cost (per unit)', ...c.markups.map(m=>`SP @ ${m}% (per unit)`)];
+    `CIF (${cur})`,'CIF (₹)','HS code','APTA / SAFTA %','BCD','SWS','IGST assessable','IGST','Landed basic cost','Total cost (incl. GST)','Unit cost (per unit)', ...priceHeads(c)];
   const N = head.length;
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('Costing', {pageSetup:{orientation:'landscape', paperSize:9, fitToPage:true, fitToWidth:1, fitToHeight:0}});
@@ -3599,14 +3613,14 @@ async function exportPoCosting(d){
   const headRow = r;
   k.header(r++, head, head.map((h,i)=>i>=23 ? XL.amber : null));
   const fm = [XL_FMT.num, null, null, XL_FMT.num, XL_FMT.price, XL_FMT.usd, XL_FMT.num, XL_FMT.num, XL_FMT.vol, XL_FMT.dec, XL_FMT.dec, XL_FMT.vol,
-    XL_FMT.usd, XL_FMT.inr, null, XL_FMT.pct, XL_FMT.inr, XL_FMT.inr, XL_FMT.inr, XL_FMT.inr, XL_FMT.inr, XL_FMT.inr, XL_FMT.inr2, ...c.markups.map(()=>XL_FMT.inr)];
+    XL_FMT.usd, XL_FMT.inr, null, XL_FMT.pct, XL_FMT.inr, XL_FMT.inr, XL_FMT.inr, XL_FMT.inr, XL_FMT.inr, XL_FMT.inr, XL_FMT.inr2, ...priceHeads(c).map(()=>costIncGstMode() ? XL_FMT.inr2 : XL_FMT.inr)];
   d.lines.forEach((l,i)=>{
     const x = c.rows[i], q = toNum(l.qty);
     k.line(r++, [i+1, l.item||'', specWithSheet(l), q, round3(l.price), r2(x.fob), toNum(l.nw), toNum(l.gw), toNum(l.vol),
-      r2(toNum(l.nw)*q), r2(toNum(l.gw)*q), round3(lineVol(l)), r2(x.cifUsd), r2(x.cifInr), l.hs||'', x.apta, r2(x.bcd), r2(x.sws), r2(x.assess), r2(x.igst), r2(x.landed), r2(x.total), r2(x.unit), ...x.sp],
+      r2(toNum(l.nw)*q), r2(toNum(l.gw)*q), round3(lineVol(l)), r2(x.cifUsd), r2(x.cifInr), l.hs||'', x.apta, r2(x.bcd), r2(x.sws), r2(x.assess), r2(x.igst), r2(x.landed), r2(x.total), r2(x.unit), ...(costIncGstMode() ? costIncGst(l, x).map(v=>v===null ? '' : r2(v)) : x.sp)],
       fm.map((f,j)=>j===3 ? xlQtyFmt(l) : f), {fill:i%2 ? XL.zebra : null, bold:[1, 20, 21, 22]});
   });
-  const totals = ['TOTAL','','',t.qty,'',r2(t.fob),'','','',r2(t.nw),r2(t.gw),r2(t.vol),r2(t.cifUsd),r2(t.cifInr),'','',r2(t.bcd),r2(t.sws),r2(t.assess),r2(t.igst),r2(t.landed),r2(t.total),'', ...c.markups.map(()=>'')];
+  const totals = ['TOTAL','','',t.qty,'',r2(t.fob),'','','',r2(t.nw),r2(t.gw),r2(t.vol),r2(t.cifUsd),r2(t.cifInr),'','',r2(t.bcd),r2(t.sws),r2(t.assess),r2(t.igst),r2(t.landed),r2(t.total),'', ...priceHeads(c).map(()=>'')];
   totals.forEach((v,i)=>k.put(r, i+1, i+1, v, {fill:XL.total, font:{bold:true}, fmt:fm[i]}));
   r += 2;
   k.band(r++, 2, 3, c.containers > 1 ? `OTHER CHARGES (₹, per container)` : 'OTHER CHARGES (₹)');
@@ -4183,11 +4197,11 @@ function renderPoSettings(body){
           </div>
         </div>
         <div class="panel">
-          <h3>Selling price markups</h3>
+          ${costIncGstMode() ? '' : `<h3>Selling price markups</h3>
           <div class="po-form" style="grid-template-columns:repeat(3,1fr);">
             ${s.markups.map((m,i)=>`<div class="field"><label>Markup ${i+1} (%)</label><input name="mk${i}" type="number" step="any" value="${escapeAttr(m)}"></div>`).join('')}
           </div>
-          <div class="hint" style="margin:-6px 0 18px;">Unit landed cost plus the markup, rounded up to the nearest ₹5.</div>
+          <div class="hint" style="margin:-6px 0 18px;">Unit landed cost plus the markup, rounded up to the nearest ₹5.</div>`}
           <div class="field"><label>Other charges on a new PO (one per line)</label><textarea name="heads" rows="6">${escapeHtml(s.chargeHeads.join('\n'))}</textarea></div>
           <div class="field"><label>Terms &amp; conditions on a new PO</label><textarea name="terms" rows="6">${escapeHtml(s.terms)}</textarea></div>
         </div>
@@ -4233,7 +4247,7 @@ function renderPoSettings(body){
     e.preventDefault();
     const buyer = {};
     Object.keys(PO_DEFAULTS.buyer).forEach(k=>{ buyer[k] = form.elements['b-'+k].value.trim(); });
-    const markups = s.markups.map((m,i)=>toNum(form.elements['mk'+i].value));
+    const markups = costIncGstMode() ? s.markups : s.markups.map((m,i)=>toNum(form.elements['mk'+i].value));
     const chargeHeads = form.elements.heads.value.split('\n').map(x=>x.trim()).filter(Boolean);
     try{
       await fb.setDoc(docRef('meta/purchasing'), {buyer, markups, chargeHeads, terms:form.elements.terms.value.trim(),
