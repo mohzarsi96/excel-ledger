@@ -3695,7 +3695,7 @@ function sheetPiParts(d){
   const crates = rows.filter(r=>r.sheet).reduce((s,r)=>s+r.crates,0);
   const others = rows.filter(r=>!r.sheet).map(r=>`${fmtQty(r.qty,0)} ${r.unit} ${r.desc}`);
   const hsCodes = [...new Set(rows.map(r=>r.hs).filter(Boolean))].join(' / ');
-  const fill = x => String(x||'').replace(/\{(\w+)\}/g, (m, k)=>({port:d.port || v.port, paymentTerms:d.paymentTerms || v.paymentTerms, packing:d.packing, shipment:d.shipment, hsCodes, priceBasis:d.priceBasis}[k] ?? m) || '');
+  const fill = x => String(x||'').replace(/\{(\w+)\}/g, (m, k)=>({port:d.port || v.port, paymentTerms:d.paymentTerms,   /* as typed on the PO */ packing:d.packing, shipment:d.shipment, hsCodes, priceBasis:d.priceBasis}[k] ?? m) || '');
   const kv = text => String(text||'').split('\n').map(x=>x.trim()).filter(Boolean).map(x=>{ const i = x.indexOf(':'); return i>0 ? [x.slice(0,i).trim(), fill(x.slice(i+1).trim())] : [fill(x), null]; });
   const bv = live.name ? live : v;   // bank details as they are now in the vendor master
   const bankLines = String(bv.bank||'').split('\n').map(x=>x.trim()).filter(Boolean);
