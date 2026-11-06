@@ -3558,6 +3558,7 @@ function invoiceParts(d, kind){
   };
 }
 function printInvoice(d, kind){
+  if(kind==='pi' && vendorPiFormat(d)==='sheet') return printSheetPi(d);
   const p = invoiceParts(d, kind), {v, t, cur} = p;
   const e = escapeHtml, br = x => e(x).replace(/\n/g,'<br>');
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${e(p.no || d.poNumber)} ${e(p.title.toLowerCase())}</title><style>
@@ -3605,6 +3606,7 @@ function printInvoice(d, kind){
   openPrintWindow(html);
 }
 async function exportInvoice(d, kind){
+  if(kind==='pi' && vendorPiFormat(d)==='sheet') return exportSheetPi(d);
   let ExcelJS;
   try{ ExcelJS = await loadExcelJs(); }catch(ex){ showToast(ex.message); return; }
   const p = invoiceParts(d, kind), {v, t, cur} = p;
@@ -3657,6 +3659,205 @@ async function exportInvoice(d, kind){
   Object.assign(ws.getCell(r, 5), {value:'Authorised Signatory', alignment:{horizontal:'right'}, border:{top:{style:'thin', color:{argb:XL.ink}}}});
   await saveWorkbook(wb, (p.no || d.poNumber || 'PO').replace(/[^\w.-]+/g,'-') + '-' + p.file + '.xlsx');
   showToast(p.title.charAt(0) + p.title.slice(1).toLowerCase() + ' ready');
+}
+
+/* Proforma invoice in the glass-sheet layout some suppliers use (vendor piFormat 'sheet', e.g. Reliance):
+   lines grouped by HS code and description, with thickness, length, width, sheets and crates; FOB amounts,
+   then sea freight, insurance and the total value; the vendor's numbered terms (piTerms) and bank details.
+   Shared by the printout and the Excel file. */
+const vendorPiFormat = d => (vendorById(d.vendorId) || {}).piFormat || '';
+function sheetPiParts(d){
+  const v = poVendor(d), live = vendorById(d.vendorId) || {}, b = poSettings().buyer, c = computePO(d), t = c.totals, cur = d.currency || 'USD';
+  const ord = n => n + (n%100>=11 && n%100<=13 ? 'th' : ['th','st','nd','rd'][n%10] || 'th');
+  const longDate = x => { const m = String(x||'').match(/^(\d{4})-(\d{2})-(\d{2})$/); return m ? `${ord(+m[3])}, ${MONTH_NAMES[+m[2]-1].slice(0,3)}, ${m[1]}` : String(x||''); };
+  const prodOf = l => state.products.find(p=>p.id===l.productId) || {};
+  const lineRows = d.lines.map((l,i)=>{
+    const p = prodOf(l), thick = toNum(p.thickness) || toNum((String(l.item||'').match(/^\s*(\d+(?:\.\d+)?)\s*MM\b/i)||[])[1]);
+    const desc = String(l.item||'').replace(/^\s*\d+(?:\.\d+)?\s*MM\s+/i, '').toUpperCase();   // the thickness has its own column
+    const size = (String(l.spec||'').match(/\d+(?:\.\d+)?\s*[x×]\s*\d+(?:\.\d+)?(?:\s*[x×]\s*\d+(?:\.\d+)?)?/i) || [l.spec||''])[0];
+    return {hs:l.hs||'', desc, sheet:!!l.altUnit, thick, length:toNum(l.width), width:toNum(l.height), sheets:toNum(l.pcs), crates:toNum(l.cases),
+      qty:toNum(l.qty), unit:lineUnit(l), size, price:isBlank(l.price) ? 0 : round3(l.price), amount:round2(c.rows[i].fob)};
+  });
+  // lines are grouped by HS code, then by description (each in order of first appearance, lines otherwise in PO order);
+  // a group shares one HS code cell, and within it one description cell
+  const firstAt = key => { const seen = new Map(); return r => { const x = key(r); if(!seen.has(x)) seen.set(x, seen.size); return seen.get(x); }; };
+  const hsAt = firstAt(r=>r.hs), descAt = firstAt(r=>r.hs + '\n' + r.desc);
+  const rows = lineRows.map((r,i)=>({r, i, h:hsAt(r), dd:descAt(r)})).sort((a,z)=>a.h-z.h || a.dd-z.dd || a.i-z.i).map(x=>x.r);
+  rows.forEach((r,i)=>{
+    const prev = rows[i-1];
+    r.hsStart = !prev || prev.hs!==r.hs;
+    r.descStart = r.hsStart || prev.desc!==r.desc;
+  });
+  rows.forEach((r,i)=>{
+    if(r.hsStart){ let n = 1; while(rows[i+n] && !rows[i+n].hsStart) n++; r.hsSpan = n; }
+    if(r.descStart){ let n = 1; while(rows[i+n] && !rows[i+n].descStart) n++; r.descSpan = n; }
+  });
+  const crates = rows.filter(r=>r.sheet).reduce((s,r)=>s+r.crates,0);
+  const others = rows.filter(r=>!r.sheet).map(r=>`${fmtQty(r.qty,0)} ${r.unit} ${r.desc}`);
+  const hsCodes = [...new Set(rows.map(r=>r.hs).filter(Boolean))].join(' / ');
+  const fill = x => String(x||'').replace(/\{(\w+)\}/g, (m, k)=>({port:d.port || v.port, paymentTerms:d.paymentTerms || v.paymentTerms, packing:d.packing, shipment:d.shipment, hsCodes, priceBasis:d.priceBasis}[k] ?? m) || '');
+  const kv = text => String(text||'').split('\n').map(x=>x.trim()).filter(Boolean).map(x=>{ const i = x.indexOf(':'); return i>0 ? [x.slice(0,i).trim(), fill(x.slice(i+1).trim())] : [fill(x), null]; });
+  const bv = live.name ? live : v;   // bank details as they are now in the vendor master
+  const bankLines = String(bv.bank||'').split('\n').map(x=>x.trim()).filter(Boolean);
+  return {v, b, t, cur, rows,
+    basis: (s => s && !/port$/i.test(s) ? s + ' PORT' : s)(String(d.priceBasis||'').trim()),
+    letterhead: [...String(v.address||'').split('\n').map(x=>x.trim().replace(/:;\s*/, ': ')).filter(Boolean), v.phone ? 'Tel: ' + v.phone : ''].filter(Boolean),
+    buyerLines: [String(b.address||'').replace(/\n/g, ' ').replace(/\s+/g,' ').trim(), b.iec && 'IEC: '+b.iec, b.gstin && 'GSTIN: '+b.gstin, b.pan && 'PAN: '+b.pan, b.phone && 'Tel: '+b.phone, b.email && 'email: '+b.email].filter(Boolean),
+    meta: [['PI No. :', d.piNumber||''], ['Date:', longDate(d.piDate)], ['P.O. No. :', d.poNumber||''], ['P.O. Date:', longDate(d.date)], ['Currency:', cur]],
+    totalText: [crates ? `${fmtQty(crates,0)} CRATE${crates!==1?'S':''}` : '', ...others].filter(Boolean).join(' + '),
+    terms: kv(live.piTerms),
+    bank: [['BENEFICIARY NAME', bv.name], ["BENEFICIARY'S BANK", bankLines[0]], ["BENEFICIARY'S BANK ADDRESS", bankLines.slice(1).join(' ')], ['SWIFT/BIC Code', bv.swift], ['Account Number', bv.accountNo],
+      ...kv(live.bankExtra)].filter(([,val])=>val).map(([k,val])=>[k + ':', val]),
+  };
+}
+function printSheetPi(d){
+  const p = sheetPiParts(d), {v, b, t, cur} = p;
+  const e = escapeHtml;
+  const money = n => fmtFx(n);
+  const body = p.rows.map(r=>`<tr>
+      ${r.hsStart ? `<td class="hs" rowspan="${r.hsSpan}">${e(r.hs)}</td>` : ''}
+      ${r.descStart ? `<td class="desc" rowspan="${r.descSpan}">${e(r.desc)}</td>` : ''}
+      ${r.sheet ? `<td>${fmtQty(r.thick,0)}</td><td>${fmtQty(r.length,0)}</td><td>${fmtQty(r.width,0)}</td><td>${fmtQty(r.sheets,0)}</td><td>${fmtQty(r.crates,0)}</td><td>${fmtQty(r.qty)}</td>`
+        : `<td colspan="3">${e(r.size)}</td><td></td><td></td><td>${fmtQty(r.qty,0)} ${e(r.unit)}</td>`}
+      <td>${fmtPrice(r.price)}</td><td>${money(r.amount)}</td></tr>`).join('');
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${e(d.piNumber || d.poNumber)} proforma invoice</title><style>
+    @page{size:A4 portrait;margin:12mm 11mm;}
+    *{-webkit-print-color-adjust:exact;print-color-adjust:exact;box-sizing:border-box;}
+    body{font-family:Arial,Helvetica,sans-serif;font-size:10px;color:#000;margin:0;}
+    .co{text-align:center;font-family:'Times New Roman',Times,serif;font-size:24px;font-weight:700;color:#3a7d22;margin:0 0 6px;}
+    .lh{text-align:center;font-size:9.5px;line-height:1.45;}
+    h2{text-align:center;font-family:'Times New Roman',Times,serif;font-size:19px;letter-spacing:.04em;margin:8px 0 8px;}
+    .top{display:flex;justify-content:space-between;gap:20px;font-size:10.5px;}
+    .top table td{padding:2px 4px;vertical-align:top;} .top .k{font-weight:700;white-space:nowrap;} .top .m{white-space:nowrap;}
+    .agree{font-size:8px;margin:8px 0 6px;}
+    table.it{width:100%;border-collapse:collapse;font-size:10px;}
+    .it th,.it td{border:1px solid #000;padding:2px 3px;text-align:center;vertical-align:middle;}
+    .it th{font-weight:700;font-size:9.5px;line-height:1.15;}
+    .it td.hs{font-weight:700;} .it td.desc{font-size:9.5px;}
+    .it .basis td{text-align:right;font-weight:700;border-left:1px solid #000;}
+    .it .b td{font-weight:700;}
+    .it .grand td{font-weight:700;font-size:13px;padding:5px 3px;}
+    .words{margin:6px 0 10px;font-size:10px;}
+    .terms td{padding:1px 4px;vertical-align:top;font-size:9.5px;} .terms .n{font-size:7.5px;font-weight:400;}
+    .terms td.k{font-weight:700;width:30%;} .terms td.full{font-weight:700;}
+    .bank{margin-top:10px;} .bank td{padding:1px 4px;font-weight:700;font-size:9.5px;vertical-align:top;} .bank td.k{width:35%;}
+    .sign{display:flex;justify-content:flex-end;margin-top:22px;} .sign>div{width:36%;text-align:center;font-weight:700;font-size:10px;}
+    .sign .box{height:85px;} .sign .line{border-top:1px solid #000;padding-top:3px;}
+    tr{page-break-inside:avoid;}
+  </style></head><body>
+    <div class="co">${e(String(v.name||'').toUpperCase())}</div>
+    <div class="lh">${p.letterhead.map(e).join('<br>')}</div>
+    <h2>PROFORMA&nbsp; INVOICE</h2>
+    <div class="top">
+      <table><tr><td class="k">The Buyers :</td><td>${e(String(b.name||companyLabel(company())).toUpperCase())}</td></tr>${p.buyerLines.map(x=>`<tr><td></td><td>${e(x)}</td></tr>`).join('')}</table>
+      <table>${p.meta.map(([k,val])=>`<tr><td class="k">${e(k)}</td><td class="m">${e(val)}</td></tr>`).join('')}</table>
+    </div>
+    <div class="agree">The Undersign Sellers And Buyers Have Agreed To Close The Following Transaction According To The Terms And Condition Stipulated Below:</div>
+    <table class="it">
+      <thead><tr><th style="width:8%">HS CODE</th><th style="width:15%">Description &amp; Specification</th><th style="width:6%">THICKNESS MM</th><th style="width:7%">LENGTH</th><th style="width:7%">WIDTH</th>
+        <th style="width:6%">SHEETS</th><th style="width:6%">CRATES</th><th style="width:10%">Quantity<br>(SQM)</th><th style="width:9%">Unit Price<br>(${e(cur)}/SQM)</th><th style="width:12%">Amount<br>(${e(cur)} )</th></tr></thead>
+      <tbody>
+        ${p.basis ? `<tr class="basis"><td colspan="10">${e(p.basis)}</td></tr>` : ''}
+        ${body}
+        <tr class="b"><td colspan="7" style="text-align:right;">TOTAL FOB</td><td colspan="2"></td><td>${money(t.fob)}</td></tr>
+        <tr class="b"><td colspan="2">SEA FREIGHT</td><td colspan="6"></td><td></td><td>${money(toNum(d.freight))}</td></tr>
+        <tr class="b"><td colspan="2">INSURANCE</td><td colspan="6"></td><td></td><td>${money(toNum(d.insurance))}</td></tr>
+        <tr class="grand"><td>Total:</td><td colspan="2"></td><td colspan="4">${e(p.totalText)}</td><td colspan="2">TOTAL VALUE</td><td>${cur==='USD' ? 'US$' : e(cur)+' '}${money(t.cifUsd)}</td></tr>
+      </tbody>
+    </table>
+    <div class="words"><b>Amount in words:</b> ${e(amountInWords(t.cifUsd, cur))}</div>
+    ${p.terms.length ? `<table class="terms">${p.terms.map(([k,val],i)=>val===null
+      ? `<tr><td class="full" colspan="2"><span class="n">(${i+1})</span> ${e(k)}</td></tr>`
+      : `<tr><td class="k"><span class="n">(${i+1})</span> ${e(k)}:</td><td>${e(val)}</td></tr>`).join('')}</table>` : ''}
+    ${p.bank.length ? `<table class="bank"><tr><td colspan="2">(${p.terms.length+1}) Bank information :</td></tr>${p.bank.map(([k,val])=>`<tr><td class="k">${e(k)}</td><td>${e(val)}</td></tr>`).join('')}</table>` : ''}
+    <div class="sign"><div>For ${e(String(v.name||'').toUpperCase())}<div class="box"></div><div class="line">Authorised Signatory</div></div></div>
+    <script>window.onload = () => window.print();<\/script>
+  </body></html>`;
+  openPrintWindow(html);
+}
+async function exportSheetPi(d){
+  let ExcelJS;
+  try{ ExcelJS = await loadExcelJs(); }catch(ex){ showToast(ex.message); return; }
+  const p = sheetPiParts(d), {v, b, t, cur} = p, r2 = round2;
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Proforma invoice', {views:[{showGridLines:false}],
+    pageSetup:{orientation:'portrait', paperSize:9, fitToPage:true, fitToWidth:1, fitToHeight:0, margins:{left:0.4, right:0.4, top:0.5, bottom:0.5, header:0.2, footer:0.2}}});
+  ws.columns = [11, 22, 9, 9, 9, 8, 8, 12, 12, 14].map(width=>({width}));
+  const N = 10, k = xlKit(ws), center = {horizontal:'center'};
+  // text without borders (letterhead, buyer block, terms)
+  const plain = (r, c1, c2, value, font, align) => {
+    if(c2 > c1) ws.mergeCells(r, c1, r, c2);
+    const cell = ws.getCell(r, c1);
+    cell.value = value; if(font) cell.font = font;
+    cell.alignment = {vertical:'top', wrapText:true, ...(align||{})};
+    return cell;
+  };
+  const tall = (r, text, perLine) => { ws.getRow(r).height = Math.max(14, Math.ceil(String(text||'').length / perLine) * 13); };
+  let r = 1;
+  plain(r, 1, N, String(v.name||'').toUpperCase(), {bold:true, size:20, name:'Times New Roman', color:{argb:'FF3A7D22'}}, center); ws.getRow(r++).height = 30;
+  p.letterhead.forEach(text=>{ plain(r, 1, N, text, {size:9}, center); tall(r++, text, 120); });
+  r++;
+  plain(r, 1, N, 'PROFORMA  INVOICE', {bold:true, size:16, name:'Times New Roman'}, center); ws.getRow(r++).height = 24;
+  const buyer = [String(b.name||companyLabel(company())).toUpperCase(), ...p.buyerLines];
+  for(let i=0; i<Math.max(buyer.length, p.meta.length); i++, r++){
+    if(i===0) plain(r, 1, 1, 'The Buyers :', {bold:true});
+    if(buyer[i]){ plain(r, 2, 7, buyer[i]); tall(r, buyer[i], 75); }
+    if(p.meta[i]){ plain(r, 8, 8, p.meta[i][0], {bold:true}); plain(r, 9, 10, p.meta[i][1]); }
+  }
+  plain(r++, 1, N, 'The Undersign Sellers And Buyers Have Agreed To Close The Following Transaction According To The Terms And Condition Stipulated Below:', {size:8});
+  const bold = {font:{bold:true}, align:center};
+  ['HS CODE','Description & Specification','THICKNESS MM','LENGTH','WIDTH','SHEETS','CRATES','Quantity (SQM)',`Unit Price (${cur}/SQM)`,`Amount (${cur})`]
+    .forEach((h,i)=>k.put(r, i+1, i+1, h, bold));
+  ws.getRow(r++).height = 32;
+  if(p.basis){ k.put(r++, 1, N, p.basis, {font:{bold:true}, align:{horizontal:'right'}}); }
+  const r0 = r;
+  p.rows.forEach((x, i)=>{
+    const row = r0 + i;
+    k.put(row, 1, 1, x.hsStart ? x.hs : null, bold);
+    k.put(row, 2, 2, x.descStart ? x.desc : null, {align:center});
+    if(x.sheet){
+      [x.thick, x.length, x.width, x.sheets, x.crates].forEach((val, j)=>k.put(row, 3+j, 3+j, val, {fmt:XL_FMT.num, align:center}));
+      k.put(row, 8, 8, x.qty, {fmt:XL_FMT.dec, align:center});
+    }else{
+      k.put(row, 3, 5, x.size, {align:center}); k.put(row, 6, 6, '', {}); k.put(row, 7, 7, '', {});
+      k.put(row, 8, 8, `${fmtQty(x.qty,0)} ${x.unit}`, {align:center});
+    }
+    k.put(row, 9, 9, x.price, {fmt:XL_FMT.price, align:center});
+    k.put(row, 10, 10, x.amount, {fmt:XL_FMT.usd, align:center});
+  });
+  // merge the shared HS code and description cells
+  p.rows.forEach((x, i)=>{
+    if(x.hsStart && x.hsSpan > 1) ws.mergeCells(r0+i, 1, r0+i+x.hsSpan-1, 1);
+    if(x.descStart && x.descSpan > 1) ws.mergeCells(r0+i, 2, r0+i+x.descSpan-1, 2);
+  });
+  r = r0 + p.rows.length;
+  k.put(r, 1, 7, 'TOTAL FOB', {font:{bold:true}, align:{horizontal:'right'}}); k.put(r, 8, 9, '', {}); k.put(r, 10, 10, r2(t.fob), {font:{bold:true}, fmt:XL_FMT.usd, align:center}); r++;
+  [['SEA FREIGHT', toNum(d.freight)], ['INSURANCE', toNum(d.insurance)]].forEach(([label, amt])=>{
+    k.put(r, 1, 2, label, bold); k.put(r, 3, 8, '', {}); k.put(r, 9, 9, '', {}); k.put(r, 10, 10, r2(amt), {fmt:XL_FMT.usd, align:center}); r++;
+  });
+  const big = {font:{bold:true, size:12}, align:center};
+  k.put(r, 1, 1, 'Total:', big); k.put(r, 2, 3, '', {}); k.put(r, 4, 7, p.totalText, big); k.put(r, 8, 9, 'TOTAL VALUE', big);
+  k.put(r, 10, 10, r2(t.cifUsd), {...big, fmt:cur==='USD' ? '"US$"#,##0.00' : XL_FMT.usd}); ws.getRow(r++).height = 30;
+  r++;
+  const words = 'Amount in words: ' + amountInWords(t.cifUsd, cur);
+  plain(r, 1, N, words); tall(r++, words, 120);
+  r++;
+  p.terms.forEach(([key, val], i)=>{
+    if(val===null){ plain(r, 1, N, `(${i+1}) ${key}`, {bold:true}); tall(r++, key, 115); return; }
+    plain(r, 1, 4, `(${i+1}) ${key}:`, {bold:true}); plain(r, 5, N, val); tall(r++, val, 70);
+  });
+  if(p.bank.length){
+    r++;
+    plain(r++, 1, N, `(${p.terms.length+1}) Bank information :`, {bold:true});
+    p.bank.forEach(([key, val])=>{ plain(r, 1, 3, key, {bold:true}); plain(r, 4, N, val, {bold:true}); tall(r++, val, 85); });
+  }
+  r += 2;
+  plain(r, 7, N, 'For ' + String(v.name||'').toUpperCase(), {bold:true}, center);
+  r += 6;
+  ws.mergeCells(r, 7, r, N);
+  Object.assign(ws.getCell(r, 7), {value:'Authorised Signatory', font:{bold:true}, alignment:center, border:{top:{style:'thin', color:{argb:XL.ink}}}});
+  await saveWorkbook(wb, (d.piNumber || d.poNumber || 'PO').replace(/[^\w.-]+/g,'-') + '-proforma-invoice.xlsx');
+  showToast('Proforma invoice ready');
 }
 
 /* Internal costing workbook: every column of the costing sheet, with an order summary. */
@@ -4043,6 +4244,9 @@ const MASTERS = {
       {k:'accountNo', label:'Bank account no. (beneficiary)'},
       {k:'swift', label:'SWIFT / BIC'},
       {k:'bank', label:'Bank name and address', type:'textarea', full:true},
+      {k:'bankExtra', label:'More bank details on the proforma (one "Label: value" per line)', type:'textarea', full:true},
+      {k:'piFormat', label:'Proforma invoice layout', type:'select', opts:[['','Standard'],['sheet','Glass sheets (HS code, thickness, size, sheets, crates)']]},
+      {k:'piTerms', label:'Proforma terms (glass sheets layout): one per line as "Label: text"; a line without ":" prints in bold. {port} {paymentTerms} {packing} {shipment} {hsCodes} are filled from the PO', type:'textarea', full:true},
     ],
     cols:[
       {label:'Vendor', cls:'ref', cell:v=>`${escapeHtml(v.name)}${v.contact?`<div class="sub">${escapeHtml(v.contact)}</div>`:''}`},
