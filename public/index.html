@@ -3455,6 +3455,7 @@ async function exportCustomsPo(d){
       ws.addImage(wb.addImage({base64:s.stamp, extension:m[1]==='png' ? 'png' : 'jpeg'}), {tl:{col:0.3, row:stampRow - 1 + 0.2}, ext:{width:w, height:h}});
     }
   }
+  await xlStamp(wb, ws, vendorStamp(d), 4.6, stampRow - 1 + 0.2);   // the supplier's stamp (vendor master)
   plain(r, 1, 3, 'Authorised Signatory');
   plain(r, 5, 6, 'Signature & Stamp', null, {horizontal:'right'});
   [1, 2, 3, 5, 6].forEach(col=>{ ws.getCell(r, col).border = {top:{style:'thin', color:{argb:XL.ink}}}; });
@@ -3519,7 +3520,7 @@ function printCustomsPo(d){
     ${terms.length ? `<div class="sec">TERMS &amp; CONDITIONS</div><table class="terms">${terms.map(([k,val])=>`<tr><td>${e(k)}</td><td>${br(val)}</td></tr>`).join('')}</table>` : ''}
     <div class="sign">
       <div><div class="who">For ${e(buyerName.toUpperCase())}</div><div class="box">${s.stamp ? `<img src="${s.stamp}" alt="">` : ''}</div><div class="line">Authorised Signatory</div></div>
-      <div class="right"><div class="who">Accepted by Supplier</div><div class="box"></div><div class="line">Signature &amp; Stamp</div></div>
+      <div class="right"><div class="who">Accepted by Supplier</div><div class="box">${vendorStamp(d) ? `<img src="${e(vendorStamp(d))}" alt="">` : ''}</div><div class="line">Signature &amp; Stamp</div></div>
     </div>
   </div>
   <script>window.onload = () => window.print();<\/script>
