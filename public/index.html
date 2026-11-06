@@ -3582,7 +3582,7 @@ function printInvoice(d, kind){
     .words{font-style:italic;padding:6px 8px;border-bottom:1px solid #9aa7b8;}
     .terms td{border:1px solid #9aa7b8;padding:4px 6px;vertical-align:top;} .terms td:first-child{background:#dfe6ef;font-weight:700;width:30%;}
     .sign{display:flex;justify-content:flex-end;padding:14px 8px 8px;} .sign>div{width:45%;text-align:right;}
-    .sign .who{font-weight:700;} .sign .box{height:90px;} .sign .line{border-top:1px solid #111;padding-top:3px;}
+    .sign .who{font-weight:700;} .sign .box{height:100px;display:flex;align-items:center;justify-content:flex-end;padding:4px 0;} .sign img{max-height:90px;max-width:220px;} .sign .line{border-top:1px solid #111;padding-top:3px;}
     tr{page-break-inside:avoid;}
   </style></head><body><div class="sheet">
     <div class="head"><div class="name">${e(String(v.name||'').toUpperCase())}</div>${p.supplierLines.map(x=>`<div>${br(x)}</div>`).join('')}</div>
@@ -3599,7 +3599,7 @@ function printInvoice(d, kind){
     </table>
     <div class="words">Amount in words: ${e(amountInWords(t.cifUsd, cur))}</div>
     ${p.terms.length ? `<div class="sec">TERMS &amp; BANK DETAILS</div><table class="terms">${p.terms.map(([k,val])=>`<tr><td>${e(k)}</td><td>${br(val)}</td></tr>`).join('')}</table>` : ''}
-    <div class="sign"><div><div class="who">For ${e(String(v.name||'').toUpperCase())}</div><div class="box"></div><div class="line">Authorised Signatory</div></div></div>
+    <div class="sign"><div><div class="who">For ${e(String(v.name||'').toUpperCase())}</div><div class="box">${vendorStamp(d) ? `<img src="${e(vendorStamp(d))}" alt="">` : ''}</div><div class="line">Authorised Signatory</div></div></div>
   </div>
   <script>window.onload = () => window.print();<\/script>
   </body></html>`;
@@ -3654,6 +3654,7 @@ async function exportInvoice(d, kind){
   r += 2;
   ws.mergeCells(r, 5, r, 7);
   Object.assign(ws.getCell(r, 5), {value:'For ' + String(v.name||'').toUpperCase(), font:{bold:true}, alignment:{horizontal:'right'}});
+  await xlStamp(wb, ws, vendorStamp(d), 4.6, r + 0.1);
   r += 5;
   ws.mergeCells(r, 5, r, 7);
   Object.assign(ws.getCell(r, 5), {value:'Authorised Signatory', alignment:{horizontal:'right'}, border:{top:{style:'thin', color:{argb:XL.ink}}}});
@@ -3666,6 +3667,15 @@ async function exportInvoice(d, kind){
    then sea freight, insurance and the total value; the vendor's numbered terms (piTerms) and bank details.
    Shared by the printout and the Excel file. */
 const vendorPiFormat = d => (vendorById(d.vendorId) || {}).piFormat || '';
+/* The vendor's stamp / signature image (vendor master), printed above "Authorised Signatory" on their invoices. */
+const vendorStamp = d => (vendorById(d.vendorId) || {}).stamp || poVendor(d).stamp || '';
+async function xlStamp(wb, ws, src, col, row){
+  const m = String(src||'').match(/^data:image\/(png|jpe?g)/);
+  if(!m) return;
+  const [w0, h0] = await new Promise(ok=>{ const im = new Image(); im.onload = ()=>ok([im.naturalWidth, im.naturalHeight]); im.onerror = ()=>ok([2, 1]); im.src = src; });
+  const h = 88, w = Math.min(220, w0 * h / h0);
+  ws.addImage(wb.addImage({base64:src, extension:m[1]==='png' ? 'png' : 'jpeg'}), {tl:{col, row}, ext:{width:w, height:h}});
+}
 function sheetPiParts(d){
   const v = poVendor(d), live = vendorById(d.vendorId) || {}, b = poSettings().buyer, c = computePO(d), t = c.totals, cur = d.currency || 'USD';
   const ord = n => n + (n%100>=11 && n%100<=13 ? 'th' : ['th','st','nd','rd'][n%10] || 'th');
@@ -3742,7 +3752,7 @@ function printSheetPi(d){
     .terms td.k{font-weight:700;width:30%;} .terms td.full{font-weight:700;}
     .bank{margin-top:10px;} .bank td{padding:1px 4px;font-weight:700;font-size:9.5px;vertical-align:top;} .bank td.k{width:35%;}
     .sign{display:flex;justify-content:flex-end;margin-top:22px;} .sign>div{width:36%;text-align:center;font-weight:700;font-size:10px;}
-    .sign .box{height:85px;} .sign .line{border-top:1px solid #000;padding-top:3px;}
+    .sign .box{height:85px;display:flex;align-items:center;justify-content:center;} .sign img{max-height:84px;max-width:220px;} .sign .line{border-top:1px solid #000;padding-top:3px;}
     tr{page-break-inside:avoid;}
   </style></head><body>
     <div class="co">${e(String(v.name||'').toUpperCase())}</div>
@@ -3770,7 +3780,7 @@ function printSheetPi(d){
       ? `<tr><td class="full" colspan="2"><span class="n">(${i+1})</span> ${e(k)}</td></tr>`
       : `<tr><td class="k"><span class="n">(${i+1})</span> ${e(k)}:</td><td>${e(val)}</td></tr>`).join('')}</table>` : ''}
     ${p.bank.length ? `<table class="bank"><tr><td colspan="2">(${p.terms.length+1}) Bank information :</td></tr>${p.bank.map(([k,val])=>`<tr><td class="k">${e(k)}</td><td>${e(val)}</td></tr>`).join('')}</table>` : ''}
-    <div class="sign"><div>For ${e(String(v.name||'').toUpperCase())}<div class="box"></div><div class="line">Authorised Signatory</div></div></div>
+    <div class="sign"><div>For ${e(String(v.name||'').toUpperCase())}<div class="box">${vendorStamp(d) ? `<img src="${e(vendorStamp(d))}" alt="">` : ''}</div><div class="line">Authorised Signatory</div></div></div>
     <script>window.onload = () => window.print();<\/script>
   </body></html>`;
   openPrintWindow(html);
@@ -3853,6 +3863,7 @@ async function exportSheetPi(d){
   }
   r += 2;
   plain(r, 7, N, 'For ' + String(v.name||'').toUpperCase(), {bold:true}, center);
+  await xlStamp(wb, ws, vendorStamp(d), 6.8, r + 0.1);
   r += 6;
   ws.mergeCells(r, 7, r, N);
   Object.assign(ws.getCell(r, 7), {value:'Authorised Signatory', font:{bold:true}, alignment:center, border:{top:{style:'thin', color:{argb:XL.ink}}}});
@@ -4247,6 +4258,7 @@ const MASTERS = {
       {k:'bankExtra', label:'More bank details on the proforma (one "Label: value" per line)', type:'textarea', full:true},
       {k:'piFormat', label:'Proforma invoice layout', type:'select', opts:[['','Standard'],['sheet','Glass sheets (HS code, thickness, size, sheets, crates)']]},
       {k:'piTerms', label:'Proforma terms (glass sheets layout): one per line as "Label: text"; a line without ":" prints in bold. {port} {paymentTerms} {packing} {shipment} {hsCodes} are filled from the PO', type:'textarea', full:true},
+      {k:'stamp', label:'Vendor stamp / signature (printed on their proforma and commercial invoices)', type:'image', full:true},
     ],
     cols:[
       {label:'Vendor', cls:'ref', cell:v=>`${escapeHtml(v.name)}${v.contact?`<div class="sub">${escapeHtml(v.contact)}</div>`:''}`},
@@ -4364,6 +4376,13 @@ function openMasterModal(kind, id){
     if(f.type==='textarea') return `<textarea ${name} rows="3">${escapeHtml(v??'')}</textarea>`;
     if(f.type==='select') return `<select ${name}>${f.opts.map(([o,label])=>`<option value="${escapeAttr(o)}" ${(v||'')===o?'selected':''}>${escapeHtml(label)}</option>`).join('')}</select>`;
     if(f.type==='calc') return `<input name="${f.k}" disabled>`;
+    if(f.type==='image') return `<input type="hidden" ${name} value="${escapeAttr(v??'')}">
+      <div class="stamp-preview" data-img-preview="${f.k}"></div>
+      <div style="display:flex;gap:8px;margin-top:6px;">
+        <button type="button" class="btn btn-sm" data-img-pick="${f.k}"></button>
+        <button type="button" class="btn btn-sm btn-danger" data-img-clear="${f.k}">Remove</button>
+        <input type="file" data-img-file="${f.k}" accept="image/png,image/jpeg,image/webp" hidden>
+      </div>`;
     if(f.type==='hs') return `<select ${name}><option value="">—</option>${state.hscodes.slice().sort(byText(h=>h.id)).map(h=>`<option value="${escapeAttr(h.id)}" ${v===h.id?'selected':''}>${escapeHtml(h.id)}${h.description?' · '+escapeHtml(h.description):''}</option>`).join('')}</select>`;
     return `<input ${name} ${f.type==='num'?'type="number" step="any"':''} value="${escapeAttr(v??'')}" ${f.k===def.idField && r ? 'disabled' : ''}>`;
   };
@@ -4386,6 +4405,26 @@ function openMasterModal(kind, id){
   const form = overlay.querySelector('#m-form');
   overlay.addEventListener('click', e=>{ if(e.target===overlay) overlay.remove(); });
   overlay.querySelector('#m-cancel').addEventListener('click', ()=>overlay.remove());
+  // image fields (vendor stamp): shrunk and kept as a data URL in a hidden input
+  def.fields.filter(f=>f.type==='image').forEach(f=>{
+    const q = a => overlay.querySelector(`[${a}="${f.k}"]`), hidden = form.elements[f.k], file = q('data-img-file');
+    const show = () => {
+      const src = hidden.value;
+      q('data-img-preview').innerHTML = src ? `<img src="${escapeAttr(src)}" alt="">` : '<span class="muted">No image uploaded</span>';
+      q('data-img-pick').textContent = src ? 'Replace image' : 'Upload image';
+      q('data-img-clear').hidden = !src;
+    };
+    q('data-img-pick').addEventListener('click', ()=>file.click());
+    q('data-img-clear').addEventListener('click', ()=>{ hidden.value = ''; show(); });
+    file.addEventListener('change', async ()=>{
+      const x = file.files[0];
+      file.value = '';
+      if(!x) return;
+      try{ hidden.value = await shrinkImage(x, 480); show(); }
+      catch(ex){ console.error(ex); showToast('Could not read that image'); }
+    });
+    show();
+  });
   if(form.elements.sqm){
     const showSqm = () => {
       const g = k => form.elements[k].value;
