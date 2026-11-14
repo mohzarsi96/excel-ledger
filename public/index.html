@@ -2430,7 +2430,10 @@ function renderSettings(page){
 const PO_DEFAULTS = {
   buyer:{name:'', tagline:'', address:'', iec:'', gstin:'', pan:'', phone:'', email:''},
   markups:[20,25,30],
-  chargeHeads:['Shipping','Agency','Exam','Docs','CFS','Transport','Forklift','CMC','Empty','Stamp duty','Unloading','Misc'],
+  // other charges on a new PO, with default amounts (₹ per container; a plain name = 0)
+  chargeHeads:[{label:'Shipping', amount:22000}, {label:'Agency', amount:5000}, {label:'Exam', amount:2500}, {label:'Docs', amount:1000},
+    {label:'CFS', amount:7500}, {label:'Transport', amount:20000}, {label:'CMC', amount:200}, {label:'Empty', amount:2000},
+    {label:'Stamp duty', amount:1200}, {label:'Other', amount:10000}],
   terms:[
     '1. All prices are in USD. Payment as per the payment terms above.',
     '2. Goods to be packed in export-standard cartons / wooden crates suitable for sea freight.',
@@ -2441,6 +2444,7 @@ const PO_DEFAULTS = {
   // PO for customs: defaults for a new PO, and the company stamp / signature image (data URL)
   priceBasis:'CIF Nhava Sheva', shipment:'', packing:'', stamp:'',
 };
+const chargeDefaults = s => (s.chargeHeads||[]).map(h=>typeof h==='string' ? {label:h, amount:0} : {label:String(h.label||''), amount:toNum(h.amount)});
 function poSettings(){
   const p = state.purchasing || {};
   return {...PO_DEFAULTS, ...p, buyer:{...PO_DEFAULTS.buyer, ...(p.buyer||{})}};
@@ -2662,7 +2666,7 @@ function newPoDraft(){
     poNumber:`PO-${y}-${String(seq+1).padStart(3,'0')}`, date:todayISO(), status:'draft',
     vendorId:'', paymentTerms:'', currency:'USD', deliveryTerms:'FOB', port:'',
     rate:'', freight:0, insurance:0, claimApta:true,
-    containers:1, charges:s.chargeHeads.map(label=>({label, amount:0})), lines:[], terms:s.terms,
+    containers:1, charges:chargeDefaults(s), lines:[], terms:s.terms,
     beNumber:'', beDate:'', piNumber:'', piDate:'', priceBasis:s.priceBasis, shipment:s.shipment, packing:s.packing,
   };
 }
@@ -4549,7 +4553,7 @@ function renderPoSettings(body){
             ${s.markups.map((m,i)=>`<div class="field"><label>Markup ${i+1} (%)</label><input name="mk${i}" type="number" step="any" value="${escapeAttr(m)}"></div>`).join('')}
           </div>
           <div class="hint" style="margin:-6px 0 18px;">Unit landed cost plus the markup, rounded up to the nearest ₹5.</div>`}
-          <div class="field"><label>Other charges on a new PO (one per line)</label><textarea name="heads" rows="6">${escapeHtml(s.chargeHeads.join('\n'))}</textarea></div>
+          <div class="field"><label>Other charges on a new PO (one per line, "Name: amount" in ₹ per container)</label><textarea name="heads" rows="8">${escapeHtml(chargeDefaults(s).map(h=>h.amount ? `${h.label}: ${h.amount}` : h.label).join('\n'))}</textarea></div>
           <div class="field"><label>Terms &amp; conditions on a new PO</label><textarea name="terms" rows="6">${escapeHtml(s.terms)}</textarea></div>
         </div>
       </div>
@@ -4595,7 +4599,10 @@ function renderPoSettings(body){
     const buyer = {};
     Object.keys(PO_DEFAULTS.buyer).forEach(k=>{ buyer[k] = form.elements['b-'+k].value.trim(); });
     const markups = costIncGstMode() ? s.markups : s.markups.map((m,i)=>toNum(form.elements['mk'+i].value));
-    const chargeHeads = form.elements.heads.value.split('\n').map(x=>x.trim()).filter(Boolean);
+    const chargeHeads = form.elements.heads.value.split('\n').map(x=>x.trim()).filter(Boolean).map(x=>{
+      const m = x.match(/^(.*?)\s*[:=]\s*(-?[\d,]*\.?\d+)\s*$/);   // "Shipping: 22000" (a plain name = 0)
+      return m ? {label:m[1].trim(), amount:toNum(m[2].replace(/,/g,''))} : {label:x, amount:0};
+    });
     try{
       await fb.setDoc(docRef('meta/purchasing'), {buyer, markups, chargeHeads, terms:form.elements.terms.value.trim(),
         priceBasis:form.elements.priceBasis.value.trim(), shipment:form.elements.shipment.value.trim(), packing:form.elements.packing.value.trim(), stamp});
