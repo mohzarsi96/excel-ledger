@@ -2535,6 +2535,16 @@ const productLabel = p => p.spec ? p.name + ' — ' + p.spec : (p.name||'');
 const sqmPerPc = p => p && p.altUnit==='SQM' && toNum(p.width) && toNum(p.height) ? toNum(p.width) * toNum(p.height) / 1e6 : 0;
 const fmtSqm = n => toNum(n).toLocaleString('en-IN',{minimumFractionDigits:3, maximumFractionDigits:3});
 const SHEET_FIELDS =['altUnit','width','height','sqmPerPc','pcsPerCase','cases','pcs'];
+/* A case of sheets is taken as 2600 kg net, 2650 kg gross and 1.5 m³. A sheet SKU's net / gross weight per SQM
+   (case weight ÷ SQM in a case, SQM in a case = SQM per pc × qty per case) and volume per pc (1.5 ÷ qty per case)
+   follow from its size and qty per case, and are filled in automatically until typed over. */
+const SHEET_CASE = {nw:2600, gw:2650, vol:1.5};
+const sheetDefaults = p => {
+  const per = toNum(p && p.pcsPerCase), caseSqm = sqmPerPc(p) * per, r4 = n => Math.round(n * 1e4) / 1e4;
+  return caseSqm ? {nw:r4(SHEET_CASE.nw / caseSqm), gw:r4(SHEET_CASE.gw / caseSqm), vol:r4(SHEET_CASE.vol / per)} : null;
+};
+// a weight / volume still at its worked-out value (or blank) is automatic; anything else was typed over
+const sheetAuto = (p, k) => { const d = sheetDefaults(p); return isBlank(p && p[k]) || !!(d && Math.abs(toNum(p[k]) - d[k]) < 1e-3); };
 function lineUnit(l){
   if(l.altUnit) return l.altUnit;
   const p = state.products.find(x=>x.id===l.productId);
@@ -4110,6 +4120,10 @@ async function uploadProducts(file){
     }
   });
   const list = [...writes.values()];
+  list.forEach(w=>{
+    const merged = {...(w.before||{}), ...w.data}, d = sheetDefaults(merged);
+    if(d) ['nw','gw','vol'].forEach(k=>{ if(isBlank(w.data[k]) && (!w.before || sheetAuto(w.before, k))) w.data[k] = d[k]; });
+  });
   const added = list.filter(w=>!w.before), updated = list.filter(w=>w.before);
   const changes = new Map();
   updated.forEach(w=>{ const ch = productChanges(w.before, w.data); if(Object.keys(ch).length) changes.set(w.id, ch); });
@@ -4217,14 +4231,14 @@ const MASTERS = {
       {k:'unit', label:'Unit (blank = PCS)'},
       {k:'hs', label:'HS code', type:'hs'},
       {k:'altUnit', label:'Alternate unit (PO qty and price)', type:'select', opts:[['','None'],['SQM','SQM (sheets: width × height)']]},
-      {k:'pcsPerCase', label:'Qty per case (pcs, optional)', type:'num'},
-      {k:'width', label:'Width (mm, optional)', type:'num'},
-      {k:'height', label:'Height (mm, optional)', type:'num'},
+      {k:'pcsPerCase', label:'Qty per case (pcs; required for SQM sheets)', type:'num'},
+      {k:'width', label:'Width (mm; required for SQM sheets)', type:'num'},
+      {k:'height', label:'Height (mm; required for SQM sheets)', type:'num'},
       {k:'thickness', label:'Thickness (mm, optional)', type:'num'},
       {k:'sqm', label:'SQM per pc (width × height)', type:'calc'},
-      {k:'nw', label:'Net weight per unit (kg; per SQM for sheets)', type:'num'},
-      {k:'gw', label:'Gross weight per unit (kg; per SQM for sheets)', type:'num'},
-      {k:'vol', label:'Volume per unit (m³; per pc for sheets)', type:'num'},
+      {k:'nw', label:'Net weight per unit (kg; per SQM for sheets, auto: 2600 ÷ SQM per case)', type:'num'},
+      {k:'gw', label:'Gross weight per unit (kg; per SQM for sheets, auto: 2650 ÷ SQM per case)', type:'num'},
+      {k:'vol', label:'Volume per unit (m³; per pc for sheets, auto: 1.5 ÷ qty per case)', type:'num'},
       {k:'lastPrice', label:'Last price paid (USD; per SQM for sheets)', type:'num'},
     ],
     cols:[
@@ -4435,6 +4449,17 @@ function openMasterModal(kind, id){
     ['width','height','altUnit'].forEach(k=>form.elements[k].addEventListener('input', showSqm));
     form.elements.altUnit.addEventListener('change', showSqm);
     showSqm();
+    // weights and volume: automatic until typed over (clearing one makes it automatic again)
+    const autoKeys = ['nw','gw','vol'], auto = Object.fromEntries(autoKeys.map(k=>[k, r ? sheetAuto(r, k) : true]));
+    const fillAuto = () => {
+      const g = k => form.elements[k].value;
+      const d = sheetDefaults({altUnit:g('altUnit'), width:g('width'), height:g('height'), pcsPerCase:g('pcsPerCase')});
+      autoKeys.forEach(k=>{ if(auto[k]) form.elements[k].value = d ? d[k] : ''; });
+    };
+    autoKeys.forEach(k=>form.elements[k].addEventListener('input', ()=>{ auto[k] = form.elements[k].value===''; if(auto[k]) fillAuto(); }));
+    ['width','height','pcsPerCase'].forEach(k=>form.elements[k].addEventListener('input', fillAuto));
+    form.elements.altUnit.addEventListener('change', fillAuto);
+    if(!r || autoKeys.some(k=>auto[k] && isBlank(r[k]))) fillAuto();
   }
   form.addEventListener('submit', async e=>{
     e.preventDefault();
@@ -4449,7 +4474,7 @@ function openMasterModal(kind, id){
       data.sku = normSku(data.sku) || (r && normSku(r.sku)) || skuSeries(state.products)();
       data.unit = (data.unit||'').toUpperCase();
       if(!isBlank(data.lastPrice)) data.lastPrice = round3(data.lastPrice);
-      if(data.altUnit==='SQM' && !sqmPerPc(data)){ err.textContent = 'Enter the width and height to use SQM.'; return; }
+      if(data.altUnit==='SQM' && (!sqmPerPc(data) || !(toNum(data.pcsPerCase) > 0))){ err.textContent = 'Enter the sheet width, height and qty per case to use SQM.'; return; }
       if(state.products.some(x=>x.id!==id && normSku(x.sku)===data.sku)){ err.textContent = data.sku + ' is already used by another product.'; return; }
     }
     let docId = id;
