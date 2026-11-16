@@ -18,6 +18,9 @@ One company: Excel Traders (`excel`), listed in `COMPANIES` in public/index.html
 
 Firestore runs with a persistent on-device cache (IndexedDB, multi-tab); sign-out clears it. Reopening within ~30 min only bills changed docs; the free plan's 50k reads/day is the limit to watch (every fresh open reads all of a company's orders).
 
+## Glass Optimiser tab
+Guillotine cutting plans for glass sheets, in `public/optimiser/` (index.html + engine.js, copied from the Desktop `glass-optimiser` folder, which is the source: edit there and copy into both ledger apps). The Glass Optimiser tab frames `/optimiser/?embed=1` (renderOptimiser); no Firestore, inputs stay in the browser (localStorage `glassopt.v1`). Admins see the tab; other users need it ticked in the Users tab. Sizes in mm or inches (shown to 1/16"); trim, kerf and per-panel grinder X/Y in mm (grinder is added to the cut size, layouts label the finished size); offcuts of 9 x 12 in or more are labelled.
+
 ## Business rules
 - PO costing (`costing:'gst'` in COMPANIES; `priceHeads` / `costIncGst`): instead of markup selling prices the costing shows cost incl. GST = unit cost × (1 + GST%); SQM lines also per sq ft (÷ 10.764) and per mm (per SQM ÷ product thickness from Masters). Markups stay saved but are hidden.
 - Gross sales and total cost include GST. Gross profit = gross − cost. Net profit = gross profit / (1 + GST%/100). GST is 18% or 5% (blank in bulk upload = 0%).
